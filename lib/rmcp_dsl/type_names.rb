@@ -1,0 +1,62 @@
+# frozen_string_literal: true
+
+module RmcpDsl
+  # How the compiler's internal types read to a person: Sorbet-style names, for `check --types`.
+  module TypeNames
+    SCALARS = { string: "String", str: "String", i32: "Integer (i32)", i64: "Integer (i64)", f64: "Float",
+                bool: "T::Boolean", strs: "T::Array[String]", i64s: "T::Array[Integer (i64)]",
+                regex: "Regexp", never: "T.noreturn", int: "Integer", block: "ContentBlock", blocks: "T::Array[ContentBlock]" }.freeze
+
+    # An internal type symbol ("struct:Name" for an object, :ostr ... for a nil-able) -> its display string.
+    def self.display(sym)
+      sym = sym.to_sym
+      return SCALARS.fetch(sym) if SCALARS.key?(sym)
+      return "T.nilable(#{display(Body::OPT.fetch(sym))})" if Body::OPT.key?(sym)
+      return "T::Hash[String, #{display(CompositeTypes.map_value(sym))}]" if CompositeTypes.map_value(sym)
+      return "T::Hash[String, T.untyped]" if sym == :empty_map
+      return CompositeTypes::Opaque.name_of(sym) if CompositeTypes::Opaque.symbol?(sym)
+
+      sym.to_s.delete_prefix("struct:")
+    end
+
+    # The type a params/output field has inside a body (an optional field is nil-able).
+    def self.field_symbol(field)
+      base =
+        case field["type"]
+        when "string_list" then :strs
+        when "i64_list" then :i64s
+        when CompositeTypes::MAP_FIELD then CompositeTypes.field_symbol(field["type"])
+        when CompositeTypes::OPAQUE_FIELD then CompositeTypes::Opaque.symbol(field["type"])
+        when CAMEL then :"struct:#{field['type']}"
+        else field["type"].to_sym
+        end
+      field["optional"] ? Body::OPT_OF.fetch(base) : base
+    end
+
+    # Gathers one entry per typed position while the compiler reads a file; nothing is collected unless
+    # a collector is passed to RmcpDsl.read. Only positions in the file at `path` are kept.
+    class Collector
+      attr_reader :path
+
+      def initialize(path)
+        @path = path
+        @entries = []
+      end
+
+      # loc is a Prism::Location; type is already a display string.
+      def add(loc, kind, type, name: nil, detail: nil, extra: nil)
+        entry = { line: loc.start_line, col: loc.start_column + 1, end_line: loc.end_line, end_col: loc.end_column + 1,
+                  kind: kind, type: type }
+        entry[:name] = name.to_s if name
+        entry[:detail] = detail if detail
+        entry.merge!(extra) if extra # declarations also carry the call, its keywords and where the name token is
+        @entries << entry
+      end
+
+      # Sorted by (line, col, end_line descending), without repeats: the compiler may type a node twice.
+      def entries
+        @entries.uniq.sort_by { |e| [e[:line], e[:col], -e[:end_line], -e[:end_col], e[:kind], e[:name].to_s] }
+      end
+    end
+  end
+end

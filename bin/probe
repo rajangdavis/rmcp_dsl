@@ -1,0 +1,139 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Which Ruby can the DSL's body language compile today? Each probe is one body expression,
+# wrapped in a throwaway server and run through `rmcp_dsl check --format json`. Prints ok, or
+# refused with the compiler's own message. It needs no cargo. Run it with `make probe`.
+#
+# Inside a body, `s` is a string and `n` an i32 (a body may use either or both). Controls must pass: if one is refused, the
+# harness itself is broken and the exit status is 1. Probes are informational.
+require "json"
+require "open3"
+require "rbconfig"
+require "tmpdir"
+
+EXE = File.expand_path("../exe/rmcp_dsl", __dir__)
+
+PROBES = [
+  [:control, "gsub with a regex",            's.gsub(/\d/, "#")'],
+  [:control, "split.map.join",               's.split.map { |w| w.capitalize }.join(" ")'],
+  [:control, "if expression",                'if n > 1 then "big" else "small" end'],
+  [:control, "string interpolation",         '"#{s}!"'],
+  [:control, "i32 arithmetic",               "(n * 2 + 1).to_s"],
+
+  # Idioms the examples rely on: a predicate or an extraction written with sub and a comparison.
+  [:idiom, "predicate: sub, then != the input", 'if s.sub(/\Ahttps?:\/\//, "") != s then "web url" else "not a web url" end'],
+  [:idiom, "extract between tags",           "t = s.sub(/\\A.*?<title[^>]*>/mi, \"\")\n          t.sub(/<\\/title>.*\\z/mi, \"\")"],
+  [:idiom, "nested ternary with a local",    "t = s.sub(/\\A.*?<b>/mi, \"\")\n          s.sub(/\\Aerror:/, \"\") != s ? s : (t == s ? \"none\" : t)"],
+
+  [:idiom, "raise as one ternary arm",       's.empty? ? raise("empty") : s'],
+
+  [:idiom, "nil-able default: first || raise", 's.split.first || raise("empty")'],
+  [:idiom, "nil-able .nil? test",            's.split.first.nil? ? "none" : "some"'],
+  [:idiom, "nil-able .to_s",                 "s.index(\"/\").to_s"],
+  [:idiom, "list include? on a literal",     '["a", "b"].include?(s) ? "yes" : "no"'],
+  [:idiom, "list empty?",                    's.split("/").empty? ? "none" : "some"'],
+  [:idiom, "negative list index",            's.split("/")[-1] || ""'],
+
+  [:idiom, "list any? / count with a block",  's.split.any? { |w| w.length > 3 } ? s.split.count { |w| w.length > 3 }.to_s : "none"'],
+  [:idiom, "to_i then arithmetic",           "(s.to_i + 1).to_s"],
+
+  [:idiom, "range sum",                      '(1..n).sum.to_s'],
+  [:idiom, "times.map with arithmetic",      'n.times.map { |i| i * i }.join(",")'],
+  [:idiom, "raise inside a list block",      '(1..n).map { |i| i > 3 ? raise("big") : i.to_s }.join(",")'],
+
+  [:probe, "start_with?",                    'if s.start_with?("http") then "y" else "n" end'],
+  [:probe, "end_with?",                      'if s.end_with?("/") then "y" else "n" end'],
+  [:probe, "include?",                       'if s.include?("://") then "y" else "n" end'],
+  [:probe, "empty?",                         'if s.empty? then "y" else "n" end'],
+  [:probe, "== comparison",                  'if s == "x" then "y" else "n" end'],
+  [:probe, "ternary",                        'n > 1 ? "a" : "b"'],
+  [:probe, "unless",                         'unless n > 1 then "a" else "b" end'],
+  [:probe, "case/when",                      'case n when 1 then "one" else "many" end'],
+  [:probe, "&& and ||",                      'if n > 1 && n < 9 then "y" else "n" end'],
+
+  [:probe, "index",                          's.index("/").to_s'],
+  [:probe, "slice s[0, 3]",                  's[0, 3] || ""'],
+  [:probe, "split(sep)[0]",                  's.split("/")[0] || ""'],
+  [:probe, "split(sep).first",               's.split("/").first || ""'],
+  [:probe, "split(sep, 2).length",           's.split("/", 2).length.to_s'],
+  [:probe, "partition",                      's.partition("/").first || ""'],
+  [:probe, "chars.length",                   "s.chars.length.to_s"],
+  [:probe, "lines.length",                   "s.lines.length.to_s"],
+  [:probe, "tr",                             's.tr("a", "b")'],
+  [:probe, "reverse",                        "s.reverse"],
+  [:probe, "squeeze",                        "s.squeeze"],
+  [:probe, "delete",                         's.delete("a")'],
+  [:probe, "string * int",                   "s * 2"],
+  [:probe, "to_i",                           "s.to_i.to_s"],
+  [:probe, "Integer(s)",                     "Integer(s, 10).to_s"],
+
+  [:probe, "regex match?",                   'if s.match?(/\Ahttps?:/) then "y" else "n" end'],
+  [:probe, "regex =~",                       'if s =~ /x/ then "y" else "n" end'],
+  [:probe, "lazy quantifier",                's.sub(/<.*?>/, "")'],
+  [:probe, "dotall + ignore case",           's.gsub(/<script.*?<\/script>/mi, "")'],
+  [:probe, "gsub with a block",              "s.gsub(/\\d/) { |d| d }"],
+
+  [:probe, "array literal",                  '["a", "b"].join(",")'],
+  [:probe, "list each",                      's.split.each { |w| w }.length.to_s'],
+  [:probe, "list select",                    's.split.select { |w| w.length > 2 }.length.to_s'],
+  [:probe, "list find",                      's.split.find { |w| w.length > 2 } || ""'],
+  [:probe, "list first / last",              's.split.last || ""'],
+  [:probe, "list [index]",                   's.split[1] || ""'],
+  [:probe, "n.times",                        '3.times.map { |i| i.to_s }.join'],
+  [:probe, "hash literal",                   '{ "a" => 1 }.length.to_s'],
+
+  [:probe, "raise in a branch",              'if n > 1 then raise "boom" else "ok" end'],
+  [:probe, "return (guard clause)",                         "return \"none\" if s.empty?\n          s"],
+  [:probe, "def inside a body",              "def helper(x) = x\n          helper(s)"]
+].freeze
+
+# The compiler refuses a |...| parameter the body never reads, so declare only those it uses.
+def server_for(body)
+  # Text inside a string literal is not a use of s or n, but an interpolation inside one is.
+  code = body.gsub(/"((?:[^"\\]|\\.)*)"/) { Regexp.last_match(1).scan(/#\{[^}]*\}/).join }
+  used = %w[s n].select { |v| code.match?(/\b#{v}\b/) }
+  <<~RB
+    server "probe", version: "0.1.0" do
+      params :P do
+        field :s, :string
+        field :n, :i32
+      end
+      tool :t, params: :P, description: "probe" do
+        body do |#{used.join(', ')}|
+          #{body}
+        end
+      end
+      transport :stdio
+    end
+  RB
+end
+
+# "ok", or the compiler's refusal message.
+def verdict(dir, idx, body)
+  file = File.join(dir, "probe_#{idx}.rb")
+  File.write(file, server_for(body))
+  out, err, = Open3.capture3(RbConfig.ruby, EXE, "check", file, "--format", "json")
+  doc = JSON.parse(out)
+  doc["ok"] ? "ok" : doc.dig("error", "message").to_s
+rescue JSON::ParserError
+  "harness error: #{err.lines.first&.strip || 'no output'}"
+end
+
+results = Dir.mktmpdir("probe") do |dir|
+  PROBES.each_with_index.map { |(kind, name, body), i| [kind, name, verdict(dir, i, body)] }
+end
+
+width = results.map { |_, name, _| name.length }.max
+results.each do |kind, name, v|
+  tag = v == "ok" ? "ok     " : "refused"
+  puts "#{tag}  #{name.ljust(width)}#{v == 'ok' ? '' : "  #{v}"}#{{ control: '  (control)', idiom: '  (idiom)' }.fetch(kind, '')}"
+end
+
+probes = results.select { |kind, _, _| kind == :probe }
+puts "\n#{probes.count { |_, _, v| v == 'ok' }} of #{probes.size} probes compile; the rest are refused above."
+broken = results.select { |kind, _, v| kind == :control && v != "ok" }
+unless broken.empty?
+  warn "bin/probe: #{broken.size} control(s) refused, so the harness or the compiler is broken"
+  exit 1
+end

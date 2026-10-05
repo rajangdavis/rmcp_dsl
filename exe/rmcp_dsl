@@ -1,0 +1,160 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "optparse"
+require "fileutils"
+require "rmcp_dsl"
+
+# rmcp_dsl check FILE.rb [--format json]       validate only; write nothing
+# rmcp_dsl build FILE.rb [-o DIR] [--release] [--emit-only]
+#                                              write the crate, then cargo build it
+# rmcp_dsl run FILE.rb [-o DIR] [--release]    build, then start the server on stdio
+# rmcp_dsl FILE.rb -o DIR | --dump-ir | --check   the original form, kept as is
+# rmcp_dsl rbi FILE... [-o DIR]               write DIR/dsl_helpers.rbi (default sorbet/rbi/rmcp_dsl): Sorbet signatures for the helpers
+SUBCOMMANDS = %w[check build run skill rbi lsp].freeze
+
+cmd = SUBCOMMANDS.include?(ARGV.first) ? ARGV.shift : nil
+out = nil
+dump = false
+check = false
+release = false
+emit_only = false
+format = "text"
+types = false
+parser = OptionParser.new do |o|
+  o.banner = "usage: rmcp_dsl check FILE.rb [--format json]\n" \
+             "       rmcp_dsl build FILE.rb [-o DIR] [--release] [--emit-only]\n" \
+             "       rmcp_dsl run FILE.rb [-o DIR] [--release]\n" \
+             "       rmcp_dsl skill [-o DIR]\n" \
+             "       rmcp_dsl rbi FILE... [-o DIR]\n" \
+             "       rmcp_dsl FILE.rb -o DIR   |   rmcp_dsl FILE.rb --dump-ir   |   rmcp_dsl FILE.rb --check"
+  o.on("-o", "--out DIR", "write DIR/Cargo.toml and DIR/src/main.rs (build, run: default build/NAME; skill: parent of the rmcp-dsl/ skill folder, default .; rbi: the folder for dsl_helpers.rbi, default sorbet/rbi/rmcp_dsl)") { |v| out = v }
+  o.on("--version", "print the rmcp_dsl version") { puts RmcpDsl::VERSION; exit }
+  o.on("--dump-ir", "print the IR as JSON, write nothing") { dump = true }
+  o.on("--check", "validate only: parse, type-check, report notifications; write nothing") { check = true }
+  o.on("--release", "build, run: pass --release to cargo") { release = true }
+  o.on("--emit-only", "build: write the crate and stop before cargo") { emit_only = true }
+  o.on("--format FMT", %w[text json], "check: text (default) or json, one document on stdout") { |v| format = v }
+  o.on("--types", "check --format json: add `types`, the inferred type of every parameter, local and expression") { types = true }
+  o.on("--warn SPEC", "all|none|CODE,CODE: which warnings to print (sets RMCP_DSL_WARN)") { |v| ENV["RMCP_DSL_WARN"] = v }
+  o.on("--notice SPEC", "all|none|CODE,CODE: which notices to print (sets RMCP_DSL_NOTICE)") { |v| ENV["RMCP_DSL_NOTICE"] = v }
+end
+parser.parse!
+if cmd == "lsp" # the language server: LSP on stdin/stdout, nothing else on stdout
+  abort parser.to_s unless ARGV.empty?
+  RmcpDsl::Lsp::Server.new($stdin, $stdout).run
+  exit
+end
+files = ARGV.slice!(0..) if cmd == "rbi"
+file = files ? files.first : ARGV.shift
+abort parser.to_s if (cmd == "skill" ? !file.nil? : file.nil?) || !ARGV.empty?
+
+json = format == "json"
+abort parser.to_s if types && !(cmd == "check" && json)
+case cmd
+when "check"
+  abort parser.to_s if out || dump || check || release || emit_only
+  check = true
+when "build"
+  abort parser.to_s if dump || check || json
+  out ||= File.join("build", File.basename(file, ".rb"))
+when "rbi"
+  abort parser.to_s if dump || check || release || emit_only || json
+when "skill"
+  abort parser.to_s if dump || check || release || emit_only || json
+when "run"
+  abort parser.to_s if dump || check || emit_only || json
+  out ||= File.join("build", File.basename(file, ".rb"))
+else
+  abort parser.to_s if [out, dump, check].count { |m| m } != 1 || release || emit_only || json
+end
+
+def write_crate(ir, file, out)
+  RmcpDsl::Emit.files(ir, file).each do |rel, text|
+    path = File.join(out, rel)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, text)
+  end
+end
+
+# "FILE:LINE:COL: message" -> fields, for editors; anything else keeps just the message.
+def diagnostic(text, suggestions = [])
+  m = text.match(/\A(.+?):(\d+):(\d+): (.*)\z/m)
+  d = m ? { file: m[1], line: m[2].to_i, col: m[3].to_i, message: m[4] } : { message: text }
+  d[:suggestions] = suggestions unless suggestions.empty?
+  d
+end
+
+if cmd == "skill"
+  begin
+    RmcpDsl::Skill.files.each do |rel, text|
+      path = File.join(out || ".", rel)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, text)
+      puts path
+    end
+  rescue SystemCallError => e
+    warn "rmcp_dsl: #{e.message}"
+    exit 1
+  end
+  exit
+end
+
+if cmd == "rbi"
+  begin
+    path = File.join(out || File.join("sorbet", "rbi", "rmcp_dsl"), "dsl_helpers.rbi")
+    text = RmcpDsl::Rbi.generate(files)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, text)
+    puts path
+  rescue RmcpDsl::CompileError, SystemCallError => e
+    warn "rmcp_dsl: #{e.message}"
+    exit 1
+  end
+  exit
+end
+
+begin
+  collector = RmcpDsl::TypeNames::Collector.new(file) if types
+  ir = RmcpDsl.read(file, types: collector)
+  if dump
+    puts JSON.pretty_generate(ir)
+  elsif check
+    if json
+      shown = RmcpDsl::Notify.visible
+      notes = shown.map { |n| n.to_h.merge(file: n.path).except(:path) }
+      doc = { ok: true, file: file, notes: notes, hidden: RmcpDsl::Notify.notes.size - shown.size }
+      doc[:types] = collector.entries if collector
+      puts JSON.generate(doc)
+    else
+      puts "#{file}: ok"
+    end
+  else
+    write_crate(ir, file, out)
+    # A build dir inside another cargo workspace would be claimed as a member; an empty
+    # [workspace] table keeps the crate standalone. Only build and run add it, so -o output
+    # stays exactly what the e2e scripts build.
+    if cmd
+      File.open(File.join(out, "Cargo.toml"), "a") { |f| f.puts "", "[workspace]" }
+    end
+  end
+  RmcpDsl::Notify.report unless json
+  if (cmd == "build" && !emit_only) || cmd == "run"
+    # Errors in generated code are reported at the DSL line that produced them.
+    exit 1 unless RmcpDsl::CargoBuild.run(out, release: release)
+    # run replaces this process so the server owns stdin and stdout; the build above makes
+    # this a no-op rebuild.
+    exec("cargo", "run", "--quiet", *("--release" if release), chdir: out) if cmd == "run"
+  end
+rescue RmcpDsl::CompileError => e
+  if json
+    puts JSON.generate(ok: false, file: file, error: diagnostic(e.message, e.suggestions))
+  else
+    warn e.message
+  end
+  exit 1
+rescue SystemCallError => e
+  warn "rmcp_dsl: #{e.message}"
+  exit 1
+end

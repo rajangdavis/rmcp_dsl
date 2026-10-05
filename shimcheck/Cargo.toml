@@ -1,0 +1,12 @@
+[package]
+name = "shimcheck"
+version = "0.1.0"
+edition = "2021"
+
+# This crate only holds the generated tests in tests/shims.rs (see bin/gen_shim_tests).
+# regex is here because the gsub/sub regex entries are checked against the real crate.
+[dependencies]
+regex = "1"
+heck = "0.5" # the crate bindings/heck.rb is backed by
+scraper = "0.27" # bindings/html.rb
+url = "2" # bindings/url.rb
