@@ -9,7 +9,14 @@ url="http://127.0.0.1:$port/mcp"
 accept='Accept: application/json, text/event-stream'
 ctype='Content-Type: application/json'
 
-"$dir/target/debug/httpkit" &
+# make shares one cargo target dir (CARGO_TARGET_DIR), so the binary is there, or else inside the crate directory
+bin=
+for candidate in "${CARGO_TARGET_DIR:-$dir/target}/debug/httpkit" "$dir/target/debug/httpkit"; do
+  if [ -x "$candidate" ]; then bin=$candidate; break; fi
+done
+[ -n "$bin" ] || { echo "FAIL: no httpkit binary under ${CARGO_TARGET_DIR:-$dir/target}/debug or $dir/target/debug"; exit 1; }
+
+"$bin" &
 pid=$!
 trap 'kill $pid 2>/dev/null || true' EXIT
 i=0
