@@ -125,7 +125,7 @@ Two layers: the Ruby generator, and the Rust it emits (built in `out/<name>/`).
 Names are proposals.
 
     setup        bundle install; cargo fetch the golden crate
-    gen          ruby bin/rmcp_dsl examples/NAME.rb -o out/NAME   (NAME=calculator default)
+    gen          ruby bin/rmcp_dsl examples/NAME.rmcp.rb -o out/NAME   (NAME=calculator default)
     ir           same, --dump-ir: print the IR as JSON, emit nothing
     test         ruby unit tests (DSL -> IR, IR -> Rust strings)
     golden-diff  gen, then diff out/NAME against golden/NAME   (fails on drift)

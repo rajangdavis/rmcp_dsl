@@ -130,7 +130,7 @@ Host hooks (owner runs `raj hook add`; commands listed here, not yet created):
 - Catalog entries: `downcase`, `upcase`, `length`, `strip`, `start_with?`,
   `include?`, `gsub(string,string)`, `gsub(regex,string)`, `sub` both forms.
 - L1, L6, L7 green on the host; L3 green for the same entries.
-- Both `gsub` forms compile into `examples/text.rb` and L4 passes.
+- Both `gsub` forms compile into `examples/textkit.rmcp.rb` and L4 passes.
 - Differences found between Ruby and Rust are recorded in the catalog `notes`,
   not hidden by weakening an example.
 
@@ -228,6 +228,14 @@ Native Ruby `strip` keeps Ruby behaviour and emits a warning; `Rust::Str` strip 
 Rust `trim()` and emits a notice; gates are environment variables only (9.3, 9.4).
 Section 8 item 3 is closed by 9.3 and items 1 and 2 by 9.1 and 9.2.
 
+### 9.7 OpenAPI tools (added later)
+
+`openapi "spec.json"` is planned by `lib/rmcp_dsl/openapi.rb`: a document in, one plan per accepted
+operation out, a clear `CompileError` for everything else. `test/test_openapi.rb` covers the planner
+and the `test/refusals/openapi_*.rb` fixtures cover the refusals, like every other rule. A generated
+tool's fields and its published `inputSchema` come from the one plan, and `Reader` re-checks the two
+against each other, so they cannot drift.
+
 ## 10. Fast pre-validation: `rmcp_dsl --check` (owner ask, 2026-10-03)
 
 Goal: validate the input before the slow compile-and-test run. Cheap because the
@@ -259,7 +267,7 @@ reporting several errors per file means the walker continues after a failure, so
 it needs a "poisoned node" rule to avoid cascades. Defer until first-error-only
 proves annoying.
 
-Hook: `raj hook add check-fast --agent --tree projected --timeout-ms 30000 -- ruby bin/rmcp_dsl --check examples/add.rb`
+Hook: `raj hook add check-fast --agent --tree projected --timeout-ms 30000 -- ruby bin/rmcp_dsl --check examples/add.rmcp.rb`
 (owner runs it; the heavy `check` hook stays separate).
 
 ## 11. Enforcing the DSL's structure in Ruby: Sorbet (spike result, 2026-10-03)
@@ -342,7 +350,7 @@ Decisions that changed or settled things written earlier in this file:
 - `capitalize` is a catalog entry with a warning (`W-STR-CAPITALIZE`) because Ruby titlecases
   some characters that Rust only uppercases.
 - Tier 2 injected Rust is implemented (`rust_crate`, `rust_item`, `rust_fn`, `rust(:name, ...)`)
-  and raises `N-RUST-INJECTED`; its first proof is `examples/injected.rb` (`make e2e-injected`).
+  and raises `N-RUST-INJECTED`; its first proof is `examples/injected.rmcp.rb` (`make e2e-injected`).
 
 Open or next:
 1. Run `make e2e-injected`; then build `fetchkit` (SKETCH.md), the first server that needs

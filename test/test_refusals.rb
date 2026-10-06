@@ -14,6 +14,7 @@ require "fileutils"
 class TestRefusals < Minitest::Test
   EXE = File.expand_path("../exe/rmcp_dsl", __dir__)
   EXAMPLE_BINDINGS = File.expand_path("../examples/bindings", __dir__)
+  OPENAPI_FIXTURES = File.expand_path("fixtures/openapi", __dir__)
 
   Dir.glob(File.expand_path("refusals/*.rb", __dir__)).sort.each do |file|
     expect = File.foreach(file).first[/\A# expect: (.+)\s*\z/, 1] or raise "#{file}: first line must be `# expect: ...`"
@@ -23,8 +24,10 @@ class TestRefusals < Minitest::Test
       # directory holding a copy of it and of the example bindings.
       Dir.mktmpdir("refusal") do |dir|
         target = file
-        if File.read(file).include?("use_bindings")
-          FileUtils.cp_r(EXAMPLE_BINDINGS, File.join(dir, "bindings"))
+        source = File.read(file)
+        if source.include?("use_bindings") || source.include?("openapi \"")
+          FileUtils.cp_r(EXAMPLE_BINDINGS, File.join(dir, "bindings")) if source.include?("use_bindings")
+          FileUtils.cp(Dir.glob(File.join(OPENAPI_FIXTURES, "*")), dir) if source.include?("openapi \"") # the documents these files read
           target = File.join(dir, File.basename(file))
           FileUtils.cp(file, target)
         end

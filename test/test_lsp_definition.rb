@@ -5,7 +5,7 @@ require "rmcp_dsl"
 
 class TestLspDefinition < Minitest::Test
   EXAMPLES = File.expand_path("../examples", __dir__)
-  URI = "file:///work/examples/x.rb"
+  URI = "file:///work/examples/x.rmcp.rb"
 
   def analyse(name)
     path = File.join(EXAMPLES, name)
@@ -41,34 +41,34 @@ class TestLspDefinition < Minitest::Test
   end
 
   def test_params_keyword_goes_to_the_params_declaration
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     assert_equal expected(a, "params :UrlParams do", "UrlParams"), definition(a, "params: :UrlParams", 11)
   end
 
   def test_output_keyword_goes_to_the_output_declaration
-    a = analyse("statkit.rb")
+    a = analyse("statkit.rmcp.rb")
     assert_equal expected(a, "output :Stats do", "Stats"), definition(a, "output: :Stats", 11)
   end
 
   def test_result_call_goes_to_the_output_declaration
-    a = analyse("statkit.rb")
+    a = analyse("statkit.rmcp.rb")
     assert_equal expected(a, "output :Counts do", "Counts"), definition(a, "result(:Counts", 9)
   end
 
   def test_nested_field_type_goes_to_the_declaration
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     assert_equal expected(a, "params :Address do", "Address"), definition(a, "field :address, :Address", 18)
-    b = analyse("statkit.rb")
+    b = analyse("statkit.rmcp.rb")
     assert_equal expected(b, "output :Counts do", "Counts"), definition(b, "field :counts, :Counts", 17)
   end
 
   def test_helper_call_goes_to_the_helper_name
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     assert_equal expected(a, "helper :checked_host,", "checked_host"), definition(a, "host = checked_host(url)", 10)
   end
 
   def test_unknown_names_and_other_places_answer_nil
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     assert_nil definition(a, "use_bindings :html", 15)
     assert_nil definition(a, "Url.valid?(url)", 1)
     assert_nil definition(a, "host = checked_host(url)", 1)
@@ -99,13 +99,13 @@ class TestLspDefinition < Minitest::Test
   end
 
   def test_outline_of_formkit
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     outline = RmcpDsl::Lsp::Outline.for(a)
     assert_equal 1, outline.size
     server = outline.first
     assert_equal ["formkit", 2, "0.1.0"], [server["name"], server["kind"], server["detail"]]
-    assert_equal %w[Address RegisterParams register stdio], server["children"].map { |c| c["name"] }
-    assert_equal [23, 23, 12, 14], server["children"].map { |c| c["kind"] }
+    assert_equal %w[Address RegisterParams register BranchParams summarize stdio], server["children"].map { |c| c["name"] }
+    assert_equal [23, 23, 12, 23, 12, 14], server["children"].map { |c| c["kind"] }
     address = server["children"].first
     assert_equal %w[city zip], address["children"].map { |c| c["name"] }
     assert_equal [8, 8], address["children"].map { |c| c["kind"] }
@@ -117,7 +117,7 @@ class TestLspDefinition < Minitest::Test
   end
 
   def test_outline_ranges_contain_their_selection_ranges
-    %w[formkit.rb webkit.rb notekit.rb statkit.rb].each do |name|
+    %w[formkit.rmcp.rb webkit.rmcp.rb notekit.rmcp.rb statkit.rmcp.rb].each do |name|
       walk(RmcpDsl::Lsp::Outline.for(analyse(name))) do |sym|
         s = sym["range"]
         sel = sym["selectionRange"]
@@ -135,10 +135,10 @@ class TestLspDefinition < Minitest::Test
   end
 
   def test_outline_of_webkit_has_helpers_and_statkit_outputs
-    names = RmcpDsl::Lsp::Outline.for(analyse("webkit.rb")).first["children"].select { |c| c["kind"] == 12 }.map { |c| c["name"] }
+    names = RmcpDsl::Lsp::Outline.for(analyse("webkit.rmcp.rb")).first["children"].select { |c| c["kind"] == 12 }.map { |c| c["name"] }
     assert_includes names, "checked_host"
     assert_includes names, "check_url"
-    outputs = RmcpDsl::Lsp::Outline.for(analyse("statkit.rb")).first["children"].select { |c| c["kind"] == 11 }
+    outputs = RmcpDsl::Lsp::Outline.for(analyse("statkit.rmcp.rb")).first["children"].select { |c| c["kind"] == 11 }
     assert_equal %w[Counts Stats], outputs.map { |c| c["name"] }
     assert_equal %w[items unique], outputs.first["children"].map { |c| c["name"] }.sort
   end

@@ -8,11 +8,11 @@ class ServerScope
   sig { params(name: Symbol, blk: T.proc.bind(OutputScope).void).void }
   def output(name, &blk); end
 
-  sig { params(name: Symbol, params: Symbol, description: String, title: T.nilable(String), read_only: T.nilable(T::Boolean), destructive: T.nilable(T::Boolean), idempotent: T.nilable(T::Boolean), open_world: T.nilable(T::Boolean), output: T.nilable(Symbol), icon: T.nilable(String), meta: T.nilable(T::Hash[String, T.untyped]), task: T.nilable(T::Boolean), task_ttl_ms: T.nilable(Integer), task_poll_ms: T.nilable(Integer), updates: T.nilable(T::Array[String]), resource_list_changed: T.nilable(T::Boolean), blk: T.proc.bind(ToolScope).void).void }
-  def tool(name, params:, description:, title: nil, read_only: nil, destructive: nil, idempotent: nil, open_world: nil, output: nil, icon: nil, meta: nil, task: nil, task_ttl_ms: nil, task_poll_ms: nil, updates: nil, resource_list_changed: nil, &blk); end
+  sig { params(name: Symbol, params: Symbol, description: String, title: T.nilable(String), read_only: T.nilable(T::Boolean), destructive: T.nilable(T::Boolean), idempotent: T.nilable(T::Boolean), open_world: T.nilable(T::Boolean), output: T.nilable(Symbol), icon: T.nilable(String), meta: T.nilable(T::Hash[String, T.untyped]), input_schema: T.nilable(T::Hash[String, T.untyped]), task: T.nilable(T::Boolean), task_ttl_ms: T.nilable(Integer), task_poll_ms: T.nilable(Integer), updates: T.nilable(T::Array[String]), resource_list_changed: T.nilable(T::Boolean), blk: T.proc.bind(ToolScope).void).void }
+  def tool(name, params:, description:, title: nil, read_only: nil, destructive: nil, idempotent: nil, open_world: nil, output: nil, icon: nil, meta: nil, input_schema: nil, task: nil, task_ttl_ms: nil, task_poll_ms: nil, updates: nil, resource_list_changed: nil, &blk); end
 
-  sig { params(name: Symbol, args: T::Array[Symbol], returns: Symbol, blk: T.untyped).void }
-  def helper(name, args:, returns:, &blk); end
+  sig { params(name: Symbol, args: T::Array[Symbol], returns: Symbol, kw: T.nilable(T::Hash[Symbol, T.untyped]), async: T.nilable(T::Boolean), blk: T.untyped).void }
+  def helper(name, args:, returns:, kw: nil, async: nil, &blk); end
 
   sig { params(name: Symbol, params: Symbol, description: String, title: T.nilable(String), icon: T.nilable(String), meta: T.nilable(T::Hash[String, T.untyped]), blk: T.proc.bind(PromptScope).void).void }
   def prompt(name, params:, description:, title: nil, icon: nil, meta: nil, &blk); end
@@ -20,8 +20,11 @@ class ServerScope
   sig { params(name: Symbol, uri: String, description: T.nilable(String), mime_type: T.nilable(String), title: T.nilable(String), icon: T.nilable(String), audience: T.nilable(T::Array[String]), priority: T.nilable(T.any(Integer, Float)), params: T.nilable(Symbol), meta: T.nilable(T::Hash[String, T.untyped]), size: T.nilable(Integer), blk: T.proc.bind(ResourceScope).void).void }
   def resource(name, uri:, description: nil, mime_type: nil, title: nil, icon: nil, audience: nil, priority: nil, params: nil, meta: nil, size: nil, &blk); end
 
-  sig { params(kind: Symbol, port: T.nilable(Integer)).void }
-  def transport(kind, port: nil); end
+  sig { params(kind: Symbol, port: T.nilable(Integer), auth_setting: T.nilable(Symbol), oauth_issuer: T.nilable(Symbol), oauth_audience: T.nilable(Symbol), oauth_resource: T.nilable(Symbol)).void }
+  def transport(kind, port: nil, auth_setting: nil, oauth_issuer: nil, oauth_audience: nil, oauth_resource: nil); end
+
+  sig { params(name: Symbol).void }
+  def feature(name); end
 
   sig { params(crate: String, version: String).void }
   def rust_crate(crate, version); end
@@ -29,25 +32,34 @@ class ServerScope
   sig { params(code: String).void }
   def rust_item(code); end
 
-  sig { params(name: Symbol, args: T::Array[Symbol], returns: Symbol, from: T.nilable(Symbol)).void }
-  def rust_fn(name, args:, returns:, from: nil); end
+  sig { params(name: Symbol, args: T::Array[Symbol], returns: Symbol, from: T.nilable(Symbol), async: T.nilable(T::Boolean)).void }
+  def rust_fn(name, args:, returns:, from: nil, async: nil); end
 
   sig { params(name: Symbol).void }
   def use_bindings(name); end
 
+  sig { params(name: Symbol, env: String, description: T.nilable(String), default: T.nilable(String), optional: T.nilable(T::Boolean), secret: T.nilable(T::Boolean)).void }
+  def setting(name, env:, description: nil, default: nil, optional: nil, secret: nil); end
+
+  sig { params(file: String, base_url: T.nilable(Symbol), auth_setting: T.nilable(Symbol), auth_header: T.nilable(String), auth_scheme: T.nilable(String), include_tags: T.nilable(T::Array[String]), exclude: T.nilable(T::Array[String])).void }
+  def openapi(file, base_url: nil, auth_setting: nil, auth_header: nil, auth_scheme: nil, include_tags: nil, exclude: nil); end
+
   sig { params(path: String, as: Symbol, uses: T.nilable(Symbol)).void }
   def rust_file(path, as:, uses: nil); end
 
-  sig { params(name: Symbol, program: String, args: T::Array[Symbol], returns: Symbol, argv: T.nilable(T::Array[String]), pass: T.nilable(Symbol)).void }
-  def cmd_fn(name, program:, args:, returns:, argv: nil, pass: nil); end
+  sig { params(name: Symbol, program: String, args: T::Array[Symbol], returns: Symbol, argv: T.nilable(T::Array[String]), pass: T.nilable(Symbol), async: T.nilable(T::Boolean)).void }
+  def cmd_fn(name, program:, args:, returns:, argv: nil, pass: nil, async: nil); end
 
-  sig { params(name: Symbol, interpreter: String, code: String, args: T::Array[Symbol], returns: Symbol, flag: T.nilable(String)).void }
-  def script_fn(name, interpreter:, code:, args:, returns:, flag: nil); end
+  sig { params(name: Symbol, interpreter: String, code: String, args: T::Array[Symbol], returns: Symbol, flag: T.nilable(String), async: T.nilable(T::Boolean)).void }
+  def script_fn(name, interpreter:, code:, args:, returns:, flag: nil, async: nil); end
+
+  sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }
+  def rust(name, *args); end
 end
 
 class ParamsScope
-  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer)).void }
-  def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil); end
+  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
+  def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, exclusive_min: nil, exclusive_max: nil, multiple_of: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil, complete: nil); end
 
   sig { params(type: Symbol).returns(Symbol) }
   def map(type); end
@@ -57,8 +69,8 @@ class ParamsScope
 end
 
 class OutputScope
-  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer)).void }
-  def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil); end
+  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
+  def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, exclusive_min: nil, exclusive_max: nil, multiple_of: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil, complete: nil); end
 
   sig { params(type: Symbol).returns(Symbol) }
   def map(type); end
@@ -76,6 +88,48 @@ class ToolScope
 
   sig { params(name: Symbol, fields: T.untyped).returns(T.untyped) }
   def result(name, **fields); end
+
+  sig { params(name: Symbol).returns(T.untyped) }
+  def setting(name); end
+
+  sig { returns(T.nilable(String)) }
+  def client_name; end
+
+  sig { returns(T.nilable(String)) }
+  def client_version; end
+
+  sig { returns(T.nilable(String)) }
+  def protocol_version; end
+
+  sig { returns(String) }
+  def request_id; end
+
+  sig { returns(T.nilable(String)) }
+  def progress_token; end
+
+  sig { returns(T::Boolean) }
+  def cancelled?; end
+
+  sig { params(value: T.any(Integer, Float), total: T.nilable(T.any(Integer, Float)), message: T.nilable(String)).returns(T.untyped) }
+  def progress(value, total: nil, message: nil); end
+
+  sig { params(name: Symbol).returns(T.untyped) }
+  def hide_tool(name); end
+
+  sig { params(name: Symbol).returns(T.untyped) }
+  def show_tool(name); end
+
+  sig { params(message: String, schema: T::Hash[String, T.untyped]).returns(T.untyped) }
+  def elicit(message, schema:); end
+
+  sig { params(level: T.any(Symbol, String), message: String).returns(T.untyped) }
+  def log(level, message); end
+
+  sig { returns(T.untyped) }
+  def roots; end
+
+  sig { params(prompt: String, max_tokens: Integer, system: T.nilable(String), temperature: T.nilable(T.any(Integer, Float)), stop: T.nilable(T::Array[String])).returns(T.untyped) }
+  def sample(prompt, max_tokens:, system: nil, temperature: nil, stop: nil); end
 
   sig { params(text: String, audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
   def text(text, audience: nil, priority: nil); end
@@ -103,22 +157,58 @@ class PromptScope
   sig { params(role: Symbol, blk: T.untyped).void }
   def message(role, &blk); end
 
+  sig { params(blk: T.untyped).void }
+  def complete(&blk); end
+
   sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }
   def rust(name, *args); end
 
   sig { params(name: Symbol, fields: T.untyped).returns(T.untyped) }
   def result(name, **fields); end
+
+  sig { params(name: Symbol).returns(T.untyped) }
+  def setting(name); end
+
+  sig { params(text: String, audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def text(text, audience: nil, priority: nil); end
+
+  sig { params(data: String, mime_type: String, audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def image(data, mime_type, audience: nil, priority: nil); end
+
+  sig { params(data: String, mime_type: String, audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def audio(data, mime_type, audience: nil, priority: nil); end
+
+  sig { params(uri: String, name: String, title: T.nilable(String), description: T.nilable(String), mime_type: T.nilable(String), size: T.nilable(Integer), audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def resource_link(uri, name:, title: nil, description: nil, mime_type: nil, size: nil, audience: nil, priority: nil); end
+
+  sig { params(uri: String, text: String, mime_type: T.nilable(String), audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def embedded_text(uri, text, mime_type: nil, audience: nil, priority: nil); end
+
+  sig { params(uri: String, data: String, mime_type: T.nilable(String), audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
+  def embedded_blob(uri, data, mime_type: nil, audience: nil, priority: nil); end
 end
 
 class ResourceScope
   sig { params(blk: T.untyped).void }
   def body(&blk); end
 
+  sig { params(blk: T.untyped).void }
+  def complete(&blk); end
+
   sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }
   def rust(name, *args); end
 
   sig { params(name: Symbol, fields: T.untyped).returns(T.untyped) }
   def result(name, **fields); end
+
+  sig { params(name: Symbol).returns(T.untyped) }
+  def setting(name); end
+
+  sig { params(text: String, uri: T.nilable(String), mime_type: T.nilable(String)).returns(ResourceContents) }
+  def text(text, uri: nil, mime_type: nil); end
+
+  sig { params(data: String, uri: T.nilable(String), mime_type: T.nilable(String)).returns(ResourceContents) }
+  def blob(data, uri: nil, mime_type: nil); end
 end
 
 sig { params(name: String, version: String, instructions: T.nilable(String), title: T.nilable(String), description: T.nilable(String), website_url: T.nilable(String), icon: T.nilable(String), page_size: T.nilable(Integer), blk: T.proc.bind(ServerScope).void).void }
@@ -126,6 +216,9 @@ def server(name, version:, instructions: nil, title: nil, description: nil, webs
 
 # What text(...), image(...) and the other content builders return.
 class ContentBlock; end
+
+# What a resource body's text(...) and blob(...) return.
+class ResourceContents; end
 
 module Rust
   sig { params(value: Integer).returns(Integer) }

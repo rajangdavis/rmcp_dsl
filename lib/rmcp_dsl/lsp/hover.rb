@@ -167,12 +167,15 @@ module RmcpDsl
         code =
           case entry[:kind]
           when "parameter", "local" then name ? "#{name}: #{type}" : type
-          when "helper" then name ? "#{name} #{type}" : type
+          when "helper"
+            base = name ? "#{name} #{type}" : type
+            entry[:async] ? "#{base}  (async)" : base
           when "field" then name ? "field :#{name} -> #{type}" : "field -> #{type}"
           when "output" then "Output #{name || type}"
           else type
           end
-        "```ruby\n#{code}\n```\n#{KIND_TEXT.fetch(entry[:kind], entry[:kind].to_s)}"
+        note = entry[:async] && entry[:async_reason] ? "\n\nAsync: it #{entry[:async_reason]}." : ""
+        "```ruby\n#{code}\n```\n#{KIND_TEXT.fetch(entry[:kind], entry[:kind].to_s)}#{note}"
       end
 
       def range(analysis, entry)

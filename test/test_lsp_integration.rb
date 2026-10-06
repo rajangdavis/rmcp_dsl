@@ -16,12 +16,12 @@ class TestLspIntegration < Minitest::Test
   end
 
   def formkit
-    path = File.expand_path("../examples/formkit.rb", __dir__)
+    path = File.expand_path("../examples/formkit.rmcp.rb", __dir__)
     [path, "file://#{path}", File.read(path)]
   end
 
   def open_formkit
-    path, uri, text = formkit
+    _path, uri, text = formkit
     [{ jsonrpc: "2.0", method: "textDocument/didOpen",
        params: { textDocument: { uri: uri, languageId: "ruby", version: 1, text: text } } }, uri, text]
   end
@@ -90,7 +90,7 @@ class TestLspIntegration < Minitest::Test
                         { jsonrpc: "2.0", method: "exit" }).find { |m| m["id"] == 6 }
     server = reply["result"].first
     assert_equal "formkit", server["name"]
-    assert_equal %w[Address RegisterParams register stdio], server["children"].map { |c| c["name"] }
+    assert_equal %w[Address RegisterParams register BranchParams summarize stdio], server["children"].map { |c| c["name"] }
   end
 
   def test_hover_on_a_declaration_uses_the_real_module

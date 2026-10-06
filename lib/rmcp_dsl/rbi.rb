@@ -10,12 +10,12 @@ module RmcpDsl
 
     RUBY_TYPES = {
       "string" => "String", "i32" => "Integer", "i64" => "Integer", "f64" => "Float", "bool" => "T::Boolean",
-      "strs" => "T::Array[String]", "i64s" => "T::Array[Integer]"
+      "strs" => "T::Array[String]", "i64s" => "T::Array[Integer]", "f64s" => "T::Array[Float]"
     }.freeze
 
     # The IR spells a nil-able type with an o prefix: ostr is a string or nil.
     NILABLE = { "ostr" => "string", "oi32" => "i32", "oi64" => "i64", "of64" => "f64", "obool" => "bool",
-                "ostrs" => "strs", "oi64s" => "i64s" }.freeze
+                "ostrs" => "strs", "oi64s" => "i64s", "of64s" => "f64s" }.freeze
 
     # IR type -> Sorbet type text.
     def self.ruby_type(ir_type)
@@ -31,9 +31,11 @@ module RmcpDsl
       files.each do |file|
         RmcpDsl.read(file)["user_helpers"].to_a.each do |h|
           sig = { names: h["args"].map(&:first), types: h["args"].map { |_, t| ruby_type(t) },
+                  kw: h["kw"].to_a.map { |k| { name: k["name"], type: ruby_type(k["type"]),
+                                               required: k["required"], default: k["default"] } },
                   returns: ruby_type(h["returns"]), file: file }
           prior = table[h["name"]]
-          if prior && (prior[:types] != sig[:types] || prior[:returns] != sig[:returns])
+          if prior && (prior[:types] != sig[:types] || prior[:returns] != sig[:returns] || prior[:kw] != sig[:kw])
             raise CompileError, "helper `#{h['name']}` is declared with different signatures in #{prior[:file]} " \
                                 "#{describe(prior)} and #{file} #{describe(sig)}; one Sorbet project sees one method per " \
                                 "name, so give them different names or the same signature"
@@ -44,7 +46,20 @@ module RmcpDsl
       table
     end
 
-    def self.describe(sig) = "(#{sig[:types].join(', ')}) -> #{sig[:returns]}"
+    def self.describe(sig)
+      kw = sig[:kw].map { |k| k[:required] ? "#{k[:name]}: #{k[:type]}" : "#{k[:name]}: #{k[:type]} = #{ruby_literal(k[:default])}" }
+      "(#{(sig[:types] + kw).join(', ')}) -> #{sig[:returns]}"
+    end
+
+    # A Ruby literal for a keyword parameter's default, so the generated `def` matches the compiled one.
+    def self.ruby_literal(value)
+      case value
+      when nil then "nil"
+      when String then value.inspect
+      when Array then "[#{value.map { |v| ruby_literal(v) }.join(', ')}]"
+      else value.to_s
+      end
+    end
 
     def self.generate(files)
       table = collect(files)
@@ -55,8 +70,13 @@ module RmcpDsl
           s = table[name]
           lines << "" if i.positive?
           params = s[:names].zip(s[:types]).map { |n, t| "#{n}: #{t}" }
+          defs = s[:names].map(&:to_s)
+          s[:kw].each do |k|
+            params << "#{k[:name]}: #{k[:type]}"
+            defs << (k[:required] ? "#{k[:name]}:" : "#{k[:name]}: #{ruby_literal(k[:default])}")
+          end
           lines << "  sig { #{params.empty? ? '' : "params(#{params.join(', ')})."}returns(#{s[:returns]}) }"
-          lines << "  def #{name}(#{s[:names].join(', ')}); end"
+          lines << "  def #{name}(#{defs.join(', ')}); end"
         end
         lines << "end" << ""
       end

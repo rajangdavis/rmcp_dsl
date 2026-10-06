@@ -10,28 +10,28 @@ root=$(pwd)
 frame() { printf 'Content-Length: %s\r\n\r\n%s' "$(printf '%s' "$1" | wc -c | tr -d ' ')" "$1"; }
 json() { ruby -rjson -e 'puts File.read(ARGV[0]).then { |t| ARGV[1] ? t.sub(ARGV[1], ARGV[2]) : t }.to_json' "$@"; }
 
-broken_uri="file://$root/examples/statkit.rb"
-good_uri="file://$root/examples/formkit.rb"
-broken_text=$(json examples/statkit.rb 'i.upcase' 'i.upcas')
-good_text=$(json examples/formkit.rb)
+broken_uri="file://$root/examples/statkit.rmcp.rb"
+good_uri="file://$root/examples/formkit.rmcp.rb"
+broken_text=$(json examples/statkit.rmcp.rb 'i.upcase' 'i.upcas')
+good_text=$(json examples/formkit.rmcp.rb)
 
 # 0-based line and column of `email` inside formkit's interpolation (ASCII line, so columns agree)
-n=$(grep -n 'greeting} #{email}' examples/formkit.rb | head -1 | cut -d: -f1)
-col=$(awk -v n="$n" 'NR == n { print index($0, "email") + 1 }' examples/formkit.rb)
+n=$(grep -n 'greeting} #{email}' examples/formkit.rmcp.rb | head -1 | cut -d: -f1)
+col=$(awk -v n="$n" 'NR == n { print index($0, "email") + 1 }' examples/formkit.rmcp.rb)
 line0=$((n - 1))
 
 # definition from the type of `field :address, :Address` to `params :Address do` (ASCII lines, so columns agree)
-dn=$(grep -n "field :address, :Address" examples/formkit.rb | head -1 | cut -d: -f1)
-dcol=$(awk -v n="$dn" 'NR == n { print index($0, ":Address") + 1 }' examples/formkit.rb)
-target0=$(($(grep -n "params :Address do" examples/formkit.rb | head -1 | cut -d: -f1) - 1))
+dn=$(grep -n "field :address, :Address" examples/formkit.rmcp.rb | head -1 | cut -d: -f1)
+dcol=$(awk -v n="$dn" 'NR == n { print index($0, ":Address") + 1 }' examples/formkit.rmcp.rb)
+target0=$(($(grep -n "params :Address do" examples/formkit.rmcp.rb | head -1 | cut -d: -f1) - 1))
 
 # completion on a map: mapkit with its `scores.fetch(...)` line replaced by `scores.`, cut right after the dot (completion is
 # not offered inside the string that line is in)
-map_uri="file://$root/examples/mapkit.rb"
-mn=$(grep -n "scores.fetch" examples/mapkit.rb | head -1 | cut -d: -f1)
+map_uri="file://$root/examples/mapkit.rmcp.rb"
+mn=$(grep -n "scores.fetch" examples/mapkit.rmcp.rb | head -1 | cut -d: -f1)
 map_line="      scores."
 mcol=${#map_line}
-map_text=$(ruby -rjson -e 'n = ARGV[1].to_i; ls = File.readlines(ARGV[0]); ls[n - 1] = ARGV[2] + "\n"; puts ls.join.to_json' examples/mapkit.rb "$mn" "$map_line")
+map_text=$(ruby -rjson -e 'n = ARGV[1].to_i; ls = File.readlines(ARGV[0]); ls[n - 1] = ARGV[2] + "\n"; puts ls.join.to_json' examples/mapkit.rmcp.rb "$mn" "$map_line")
 
 {
   frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}'

@@ -1,0 +1,60 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Shop", "version": "1.0.0" },
+  "servers": [{ "url": "https://shop.example.com/api" }],
+  "components": {
+    "securitySchemes": { "key": { "type": "apiKey", "in": "header", "name": "X-Api-Key" } },
+    "schemas": {
+      "Item": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "description": "What the item is called" },
+          "price": { "type": "number", "minimum": 0 },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/items": {
+      "get": {
+        "operationId": "listItems",
+        "summary": "List items",
+        "description": "Newest first.",
+        "tags": ["items"],
+        "parameters": [
+          { "name": "limit", "in": "query", "description": "How many to return", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          { "name": "tag", "in": "query", "schema": { "type": "array", "items": { "type": "string" } } }
+        ],
+        "responses": { "200": { "description": "the items" } }
+      },
+      "post": {
+        "operationId": "createItem",
+        "summary": "Create an item",
+        "tags": ["items"],
+        "security": [{ "key": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Item" } } } },
+        "responses": { "201": { "description": "created" } }
+      }
+    },
+    "/items/{id}": {
+      "get": {
+        "operationId": "getItem",
+        "summary": "One item",
+        "tags": ["items"],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "X-Request-Id", "in": "header", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "the item" }, "404": { "description": "no such item" } }
+      },
+      "delete": {
+        "operationId": "deleteItem",
+        "tags": ["admin"],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "204": { "description": "gone" } }
+      }
+    }
+  }
+}

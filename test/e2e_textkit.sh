@@ -1,7 +1,7 @@
 #!/bin/sh
 # L5 end to end for the textkit server (slug, word_count, redact_digits).
 # usage: sh test/e2e_textkit.sh [CRATE_DIR]      (default /tmp/textkit-out)
-# Build the crate first:  ruby exe/rmcp_dsl examples/textkit.rb -o /tmp/textkit-out
+# Build the crate first:  ruby exe/rmcp_dsl examples/textkit.rmcp.rb -o /tmp/textkit-out
 set -eu
 dir=${1:-/tmp/textkit-out}
 init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}'

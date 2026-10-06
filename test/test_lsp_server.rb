@@ -6,7 +6,7 @@ require "json"
 require "rmcp_dsl"
 
 class TestLspServer < Minitest::Test
-  PATH = File.expand_path("../examples/statkit.rb", __dir__)
+  PATH = File.expand_path("../examples/statkit.rmcp.rb", __dir__)
   URI_ = "file://#{PATH}"
 
   class FakeHover

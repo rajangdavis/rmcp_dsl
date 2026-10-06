@@ -36,6 +36,7 @@ out=$( { printf '%s\n%s\n' "$init" "$inited"
          call 44 is_public '{"ip":"8.8.8.8"}'
          call 45 is_public '{"ip":"10.0.0.1"}'
          call 46 is_public '{"ip":"::ffff:127.0.0.1"}'
+         call 50 endpoint_of '{"url":"http://8.8.8.8/"}'
          sleep 6; } | (cd "$dir" && cargo run -q) )
 printf '%s\n' "$out" | cut -c1-210
 
@@ -75,4 +76,5 @@ is 43 "$out" '(none)'
 is 44 "$out" 'public'
 is 45 "$out" 'not public'
 is 46 "$out" 'not public'
+is 50 "$out" 'https://8.8.8.8:80 http://8.8.8.8:80'
 echo "OK: webkit guards requests with Ruby plus bindings, and reads HTML, URLs and addresses without any hand-written Rust"

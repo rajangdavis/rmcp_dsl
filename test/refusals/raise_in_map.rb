@@ -1,4 +1,4 @@
-# expect: the `map` block must return a string or an integer, got never
+# expect: the `map` block must return a string, an integer or a float, got never
 server "refuse", version: "0.1.0" do
   params :P do
     field :s, :string

@@ -13,6 +13,9 @@ out=$( { printf '%s\n%s\n' "$init" "$inited"
          printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"resources/list"}'
          rpc 5 resources/read '{"uri":"guide://intro"}'
          printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"prompts/list"}'
+         rpc 7 prompts/get '{"name":"illustrated","arguments":{"topic":"caching"}}'
+         rpc 8 resources/read '{"uri":"guide://logo"}'
+         rpc 9 resources/read '{"uri":"guide://chapter"}'
          sleep 3; } | (cd "$dir" && cargo run -q) )
 printf '%s\n' "$out" | cut -c1-200
 
@@ -22,11 +25,17 @@ has 1 "$out" '"name":"guide"'; has 1 "$out" '"prompts"'; has 1 "$out" '"resource
 has 1 "$out" '"title":"Guide"'; has 1 "$out" '"description":"A tiny guide with one prompt and one resource"'
 has 1 "$out" '"websiteUrl":"https://example.com/guide"'; has 1 "$out" '"src":"https://example.com/guide.png"'
 has 2 "$out" '"tools":[]'
-has 3 "$out" 'Explain caching using the guide.'; has 3 "$out" '"role":"assistant"'
+has 3 "$out" 'Explain <<[caching]>> using the guide.'; has 3 "$out" '<<[caching]>>'; has 3 "$out" '"role":"assistant"'
 has 3 "$out" 'I am ready to explain things using the guide.'
 has 6 "$out" '"title":"Explain a topic"'; has 6 "$out" 'https://example.com/explain.png'
+has 7 "$out" 'Show me caching.'; has 7 "$out" 'An illustration of caching.'
+has 7 "$out" '"type":"image"'; has 7 "$out" '"type":"resource"'; has 7 "$out" 'The guide introduction.'
 has 4 "$out" 'https://example.com/intro.png'
 has 4 "$out" '"audience":["user","assistant"]'; has 4 "$out" '"priority":0.5'
 has 4 "$out" '"uri":"guide://intro"'; has 4 "$out" 'Guide introduction'
-has 5 "$out" '# Guide'
+has 5 "$out" '# Guide'; has 5 "$out" '<<[# Guide]>>'
+has 8 "$out" '"blob"'; has 8 "$out" '"mimeType":"image/png"'
+has 9 "$out" '# Chapter 1'; has 9 "$out" '"mimeType":"text/markdown"'
+has 9 "$out" '"blob"'; has 9 "$out" '"mimeType":"image/png"'
+[ "$(printf '%s\n' "$out" | grep '"id":9,' | grep -oF '"uri":"guide://chapter"' | wc -l | tr -d ' ')" = 2 ] || fail "id 9 should return two contents"
 echo "OK: guide serves a prompt and a resource with no tools"

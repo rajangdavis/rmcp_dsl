@@ -28,15 +28,15 @@ class TestLspAnalysis < Minitest::Test
   end
 
   def test_a_good_file_has_types_and_no_diagnostics
-    a = analyse("statkit.rb")
+    a = analyse("statkit.rmcp.rb")
     assert a.ok?, a.diagnostics.inspect
     refute_empty a.types
     assert(a.types.any? { |t| t[:kind] == "output" && t[:type] == "Stats" })
   end
 
   def test_unsaved_text_is_what_gets_compiled
-    broken = File.read(File.join(EXAMPLES, "statkit.rb")).sub("i.upcase", "i.upcas")
-    a = analyse("statkit.rb", broken)
+    broken = File.read(File.join(EXAMPLES, "statkit.rmcp.rb")).sub("i.upcase", "i.upcas")
+    a = analyse("statkit.rmcp.rb", broken)
     refute a.ok?
     d = a.diagnostics.last
     assert_match(/upcas/, d.message)
@@ -48,14 +48,14 @@ class TestLspAnalysis < Minitest::Test
   end
 
   def test_types_survive_a_mistake_further_down
-    text = File.read(File.join(EXAMPLES, "formkit.rb")).sub("tags.join", "tags.joinn")
-    a = analyse("formkit.rb", text)
+    text = File.read(File.join(EXAMPLES, "formkit.rmcp.rb")).sub("tags.join", "tags.joinn")
+    a = analyse("formkit.rmcp.rb", text)
     refute a.ok?
     assert(a.types.any? { |t| t[:kind] == "field" && t[:name] == "email" })
   end
 
   def test_declarations_record_the_call_its_keywords_and_the_name_token
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     decls = a.types.select { |t| t[:kind] == "declaration" }
     params = decls.find { |t| t[:call] == "params" && t[:name] == "Address" }
     refute_nil params
@@ -69,13 +69,13 @@ class TestLspAnalysis < Minitest::Test
   end
 
   def test_syntax_errors_become_diagnostics
-    a = analyse("statkit.rb", "server \"x\" do\n")
+    a = analyse("statkit.rmcp.rb", "server \"x\" do\n")
     refute a.ok?
     assert_match(/syntax error/, a.diagnostics.first.message)
   end
 
   def test_types_at_returns_the_narrowest_entry_first
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     line = a.lines.index { |l| l.include?("address.city") } + 1
     col = a.line_text(line).index("address.city") + 1
     hits = a.types_at(line, col)

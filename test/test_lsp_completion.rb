@@ -232,17 +232,18 @@ class TestLspCompletion < Minitest::Test
     assert_includes labels("#{HEADER}  output :Res do\n    field :x, li#{C}"), "list("
   end
 
-  def test_inside_map_the_value_types_and_list_only
+  def test_inside_map_the_value_types_objects_and_nesting
     got = labels("#{HEADER}  params :More do\n    field :x, map(#{C}")
-    assert_equal %w[:string :i64 :f64 :bool list(], got
+    assert_equal %w[:string :i64 :f64 :bool :Address :TextParams list( map(], got
     assert_equal %w[:i64], labels("#{HEADER}  params :More do\n    field :x, map(:i#{C}")
-    assert_equal %w[:string :i64 :f64 :bool], labels("#{HEADER}  params :More do\n    field :x, map(:#{C}")
-    assert_equal %w[:string :i64], labels("#{HEADER}  params :More do\n    field :x, map(list(#{C}")
-    assert_equal %w[:string :i64], labels("#{HEADER}  output :Res do\n    field :x, map(list(:#{C}")
+    assert_equal %w[:string :i64 :f64 :bool :Address :TextParams], labels("#{HEADER}  params :More do\n    field :x, map(:#{C}")
+    assert_equal %w[:string :i64 :f64], labels("#{HEADER}  params :More do\n    field :x, map(list(#{C}")
+    assert_equal %w[:string :i64 :f64], labels("#{HEADER}  output :Res do\n    field :x, map(list(:#{C}")
+    assert_equal %w[:string :i64 :f64 :bool], labels("#{HEADER}  params :More do\n    field :x, map(map(#{C}")
   end
 
   def test_inside_list_only_string_and_i64
-    assert_equal %w[:string :i64], labels("#{HEADER}  params :More do\n    field :x, list(#{C}")
+    assert_equal %w[:string :i64 :f64], labels("#{HEADER}  params :More do\n    field :x, list(#{C}")
     assert_equal %w[:string], labels("#{HEADER}  params :More do\n    field :x, list(:st#{C}")
     refute_includes labels("#{HEADER}  params :More do\n    field :x, list(#{C}"), "map("
   end
@@ -334,7 +335,7 @@ class TestLspCompletion < Minitest::Test
   def test_helper_types
     assert_includes labels("#{HEADER}  helper :h, args: [#{C}"), ":string_list"
     assert_includes labels("#{HEADER}  helper :h, args: [:string, :#{C}"), ":i64"
-    refute_includes labels("#{HEADER}  helper :h, args: [#{C}"), ":string?"
+    assert_includes labels("#{HEADER}  helper :h, args: [#{C}"), ":string?"
     returns = labels("#{HEADER}  helper :h, args: [:string], returns: :#{C}")
     assert_includes returns, ":string?"
     assert_includes returns, ":i64_list?"
@@ -401,8 +402,8 @@ class TestLspCompletion < Minitest::Test
   def test_tool_prompt_and_resource_blocks
     head = "server \"x\", version: \"1\" do\n"
     assert_equal %w[body], labels("#{head}  tool :t, params: :P, description: \"d\" do\n    #{C}")
-    assert_equal %w[body message], labels("#{head}  prompt :t, params: :P, description: \"d\" do\n    #{C}")
-    assert_equal %w[body], labels("#{head}  resource :t, uri: \"u\" do\n    #{C}")
+    assert_equal %w[body message complete], labels("#{head}  prompt :t, params: :P, description: \"d\" do\n    #{C}")
+    assert_equal %w[body complete], labels("#{head}  resource :t, uri: \"u\" do\n    #{C}")
   end
 
   def test_nothing_is_offered_inside_strings_and_comments
@@ -430,7 +431,7 @@ class TestLspCompletion < Minitest::Test
 
   # --- real examples ----------------------------------------------------------------------------------------
 
-  def example(name) = File.read(File.expand_path("../examples/#{name}.rb", __dir__))
+  def example(name) = File.read(File.expand_path("../examples/#{name}.rmcp.rb", __dir__))
 
   def cut_at(text, needle)
     line = text.lines.index { |l| l.include?(needle) } or flunk "no line with #{needle}"

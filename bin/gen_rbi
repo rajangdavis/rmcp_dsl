@@ -23,7 +23,8 @@ def sorbet_type(kind)
   return "T.any(Integer, Float)" if kind == :num
   return "Integer" if kind == :uint
   return "T.any(String, Integer, Float, T::Boolean)" if kind == :lit
-  return "T::Hash[String, T.untyped]" if kind == :json
+  return "T::Hash[String, T.untyped]" if kind == :json || kind == :schema
+  return "T::Hash[Symbol, T.untyped]" if kind == :helper_kw
   return "T::Array[Symbol]" if kind == :types || kind == :htypes
   return "T::Array[String]" if kind == :strs
   return "T.any(Symbol, T.class_of(RmcpDsl::Opaque))" if kind == :fieldtype # :i64, map(:i64), or a type a binding owns
@@ -74,6 +75,11 @@ lines = [
     lines << "" if i.positive?
     method_src(name, sig).each { |l| lines << "  #{l}" }
   end
+  if ctx == :server
+    # A helper body is typed as the server scope, so it needs rust(:name, args...) too (an async rust_fn is called from a helper).
+    lines << "" << "  sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }"
+    lines << "  def rust(name, *args); end"
+  end
   if %i[tool prompt resource].include?(ctx)
     # rust(:name, args...) calls a function declared with rust_fn; the compiler checks it.
     lines << "" << "  sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }"
@@ -81,9 +87,46 @@ lines = [
     # result(:Name, field: value) builds the structured output declared with `output`; the compiler checks the fields.
     lines << "" << "  sig { params(name: Symbol, fields: T.untyped).returns(T.untyped) }"
     lines << "  def result(name, **fields); end"
+    # setting(:name): a server setting read from the environment (a secret can only be passed to a binding or rust_fn).
+    lines << "" << "  sig { params(name: Symbol).returns(T.untyped) }"
+    lines << "  def setting(name); end"
   end
   if ctx == :tool
-    # text(...), image(...) and the other content builders: a tool body may end in one block or an array of them.
+    # the request-context built-ins a tool body may read (Body::CONTEXT_BUILTINS)
+    [["client_name", "T.nilable(String)"], ["client_version", "T.nilable(String)"],
+     ["protocol_version", "T.nilable(String)"], ["request_id", "String"],
+     ["progress_token", "T.nilable(String)"], ["cancelled?", "T::Boolean"]].each do |name, type|
+      lines << "" << "  sig { returns(#{type}) }"
+      lines << "  def #{name}; end"
+    end
+    # progress(value, total:, message:) is a statement, not a value; Sorbet only needs the call to typecheck.
+    lines << "" << "  sig { params(value: T.any(Integer, Float), total: T.nilable(T.any(Integer, Float)), message: T.nilable(String)).returns(T.untyped) }"
+    lines << "  def progress(value, total: nil, message: nil); end"
+    # hide_tool(:name) and show_tool(:name) are statements that change the advertised tool list at run time;
+    # Sorbet only needs the calls to typecheck.
+    lines << "" << "  sig { params(name: Symbol).returns(T.untyped) }"
+    lines << "  def hide_tool(name); end"
+    lines << "" << "  sig { params(name: Symbol).returns(T.untyped) }"
+    lines << "  def show_tool(name); end"
+    # elicit(message, schema: {...}) asks the client for input; Sorbet only needs the call to typecheck.
+    lines << "" << "  sig { params(message: String, schema: T::Hash[String, T.untyped]).returns(T.untyped) }"
+    lines << "  def elicit(message, schema:); end"
+    # log(level, message) sends a logging notification, but only when the server declares `feature :logging`;
+    # Sorbet only needs the call to typecheck.
+    lines << "" << "  sig { params(level: T.any(Symbol, String), message: String).returns(T.untyped) }"
+    lines << "  def log(level, message); end"
+    # roots() asks the client for its roots, but only when the server declares `feature :roots`;
+    # Sorbet only needs the call to typecheck.
+    lines << "" << "  sig { returns(T.untyped) }"
+    lines << "  def roots; end"
+    # sample(prompt, max_tokens:, system:, temperature:, stop:) asks the client's LLM for a completion, but
+    # only when the server declares `feature :sampling`; Sorbet only needs the call to typecheck.
+    lines << "" << "  sig { params(prompt: String, max_tokens: Integer, system: T.nilable(String), temperature: T.nilable(T.any(Integer, Float)), stop: T.nilable(T::Array[String])).returns(T.untyped) }"
+    lines << "  def sample(prompt, max_tokens:, system: nil, temperature: nil, stop: nil); end"
+
+  end
+  if %i[tool prompt].include?(ctx)
+    # text(...), image(...) and the other content builders: a tool body or a prompt message may end in one block or an array of them.
     annotated = "audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))"
     [["text: String", "text(text, audience: nil, priority: nil)"],
      ["data: String, mime_type: String", "image(data, mime_type, audience: nil, priority: nil)"],
@@ -95,6 +138,13 @@ lines = [
       lines << "" << "  sig { params(#{params}, #{annotated}).returns(ContentBlock) }"
       lines << "  def #{definition}; end"
     end
+  end
+  if ctx == :resource
+    # text(...) and blob(...): a resource body may end in one resource content or an array of them.
+    lines << "" << "  sig { params(text: String, uri: T.nilable(String), mime_type: T.nilable(String)).returns(ResourceContents) }"
+    lines << "  def text(text, uri: nil, mime_type: nil); end"
+    lines << "" << "  sig { params(data: String, uri: T.nilable(String), mime_type: T.nilable(String)).returns(ResourceContents) }"
+    lines << "  def blob(data, uri: nil, mime_type: nil); end"
   end
   if %i[params output].include?(ctx)
     # map(:i64) and list(:string) name a field's type; the compiler reads them with Prism and checks the argument.
@@ -110,6 +160,9 @@ by_ctx[:top].each { |name, sig| lines.concat(method_src(name, sig)) << "" }
 lines.concat([
   "# What text(...), image(...) and the other content builders return.",
   "class ContentBlock; end",
+  "",
+  "# What a resource body's text(...) and blob(...) return.",
+  "class ResourceContents; end",
   "",
   "module Rust",
   "  sig { params(value: Integer).returns(Integer) }",
@@ -149,7 +202,9 @@ lines.concat([
 ])
 text = lines.join("\n")
 
-if ARGV.include?("--check")
+if ARGV.include?("--print")
+  print text
+elsif ARGV.include?("--check")
   if File.exist?(OUT) && File.read(OUT) == text
     puts "rbi/dsl.rbi is up to date"
   else

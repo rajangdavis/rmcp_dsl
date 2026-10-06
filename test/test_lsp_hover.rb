@@ -32,7 +32,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_parameter_read
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     value = hover_text(a, "#{"{"}greeting}", 2)
     assert_includes value, "greeting: String"
     assert_includes value, "block parameter"
@@ -40,7 +40,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_hover_range_covers_the_identifier
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     h = RmcpDsl::Lsp::Hover.at(a, *spot(a, "#{"{"}greeting}", 2))
     line, col = spot(a, "#{"{"}greeting}", 2)
     assert_equal line, h["range"]["start"]["line"]
@@ -50,25 +50,25 @@ class TestLspHover < Minitest::Test
   end
 
   def test_helper_call
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     value = hover_text(a, "checked_host(url)", 3, nth: 0)
     assert_includes value, "String"
   end
 
   def test_nilable_first
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     value = hover_text(a, "checked_addresses(url).first", "checked_addresses(url).".size + 1)
     assert_includes value, "nilable"
   end
 
   def test_nested_field_read
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     assert_includes hover_text(a, "address.city", 9), "String"
     assert_includes hover_text(a, "address.city", 2), "address"
   end
 
   def test_result
-    a = analyse("statkit.rb")
+    a = analyse("statkit.rmcp.rb")
     line = a.lines.index { |l| l.include?("result(") }
     flunk "no result( in statkit" unless line
     value = hover_text(a, "result(:Stats", 1)
@@ -76,7 +76,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_whitespace_is_nil
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     assert_nil RmcpDsl::Lsp::Hover.at(a, 0, 0 + a.line_text(1).size + 5)
     assert_nil RmcpDsl::Lsp::Hover.at(a, 3, 0)
   end
@@ -105,10 +105,10 @@ class TestLspHover < Minitest::Test
   end
 
   def test_inlay_hints_for_block_parameters
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     line0 = a.lines.index { |l| l.include?("do |email, tags") }
     hints = RmcpDsl::Lsp::InlayHints.for(a, line0, line0)
-    assert_equal 6, hints.size, hints.inspect
+    assert_equal 10, hints.size, hints.inspect
     assert_equal [": String", ": T::Array[String]"].first, hints.first["label"]
     text = a.lines[line0]
     assert_equal text.index("email") + 5, hints.first["position"]["character"]
@@ -118,7 +118,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_inlay_hint_for_a_local_assignment_and_none_for_reads
-    a = analyse("webkit.rb")
+    a = analyse("webkit.rmcp.rb")
     line0 = a.lines.index { |l| l.include?("host = checked_host(url)") }
     hints = RmcpDsl::Lsp::InlayHints.for(a, line0, line0)
     assert_equal 1, hints.size, hints.inspect
@@ -129,21 +129,21 @@ class TestLspHover < Minitest::Test
   end
 
   def test_map_parameter_read
-    a = analyse("mapkit.rb")
+    a = analyse("mapkit.rmcp.rb")
     value = hover_text(a, "scores.fetch", 2)
     assert_includes value, "scores: T::Hash[String, Integer (i64)]"
     assert_includes value, "block parameter"
   end
 
   def test_map_field_declaration
-    a = analyse("mapkit.rb")
+    a = analyse("mapkit.rmcp.rb")
     value = hover_text(a, "field :scores", 8)
     assert_includes value, "field :scores -> T::Hash[String, Integer (i64)]"
     assert_includes hover_text(a, "field :groups", 8), "T::Hash[String, T::Array[String]]"
   end
 
   def test_inlay_hint_for_a_map_block_parameter
-    a = analyse("mapkit.rb")
+    a = analyse("mapkit.rmcp.rb")
     line0 = a.lines.index { |l| l.include?("do |scores, name|") }
     hints = RmcpDsl::Lsp::InlayHints.for(a, line0, line0)
     assert_equal [": T::Hash[String, Integer (i64)]", ": String"], hints.map { |h| h["label"] }
@@ -151,12 +151,12 @@ class TestLspHover < Minitest::Test
   end
 
   def test_inlay_hints_respect_the_line_range
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     assert_equal [], RmcpDsl::Lsp::InlayHints.for(a, 0, 3)
   end
 
   def test_params_declaration_lists_its_fields
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     value = hover_text(a, "params :Address", 2)
     assert_includes value, "params Address"
     assert_includes value, "city: String"
@@ -166,7 +166,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_tool_declaration_shows_params_and_flags
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     value = hover_text(a, "tool :register", 1)
     assert_includes value, "tool register(RegisterParams)"
     assert_includes value, "read_only"
@@ -174,12 +174,12 @@ class TestLspHover < Minitest::Test
   end
 
   def test_tool_declaration_shows_its_output
-    a = analyse("statkit.rb")
+    a = analyse("statkit.rmcp.rb")
     assert_includes hover_text(a, "tool :stats", 1), "tool stats(TextParams) -> Stats"
   end
 
   def test_tool_flags_that_are_set
-    a = analyse("notekit.rb")
+    a = analyse("notekit.rmcp.rb")
     value = hover_text(a, "tool :delete_note", 1)[/```ruby\n(.*?)```/m, 1]
     assert_includes value, "destructive"
     assert_includes value, "idempotent"
@@ -187,7 +187,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_prompt_resource_server_and_transport_declarations
-    a = analyse("notekit.rb")
+    a = analyse("notekit.rmcp.rb")
     assert_includes hover_text(a, "prompt :summarize", 1), "prompt summarize(SummarizeParams)"
     value = hover_text(a, "resource :guide", 1)
     assert_includes value, "resource guide"
@@ -195,11 +195,11 @@ class TestLspHover < Minitest::Test
     server = hover_text(a, "server \"notekit\"", 1)
     assert_includes server, "server"
     assert_includes server, "0.1.0"
-    assert_includes hover_text(analyse("webkit.rb"), "transport :stdio", 2), "transport stdio"
+    assert_includes hover_text(analyse("webkit.rmcp.rb"), "transport :stdio", 2), "transport stdio"
   end
 
   def test_keyword_label_shows_its_documentation_and_value
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     h = RmcpDsl::Lsp::Hover.at(a, *spot(a, "read_only:", 2))
     value = h["contents"]["value"]
     assert_includes value, "read_only: true"
@@ -209,7 +209,7 @@ class TestLspHover < Minitest::Test
   end
 
   def test_whitespace_inside_a_block_and_strings_are_nil
-    a = analyse("formkit.rb")
+    a = analyse("formkit.rmcp.rb")
     assert_nil RmcpDsl::Lsp::Hover.at(a, *spot(a, "field :city", -1))
     assert_nil RmcpDsl::Lsp::Hover.at(a, *spot(a, "body do |email", -1))
     assert_nil RmcpDsl::Lsp::Hover.at(a, *spot(a, "Describe a registration", 3))

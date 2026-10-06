@@ -1,4 +1,4 @@
-# expect: maps of objects are not supported yet
+# expect: `Address` is not declared above this field
 server "refuse", version: "0.1.0" do
   params :P do
     field :m, map(:Address)

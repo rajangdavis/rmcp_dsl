@@ -16,7 +16,15 @@ writes `Cargo.toml` and `src/main.rs`. Every error is `FILE:LINE:COL: message`.
   :f64 :bool :string :str :int :regex :strs`. Deny by default: an unknown node is an error.
 - `regex_translate.rb`: pure Ruby-regex to Rust-`regex` translation; rejects what differs.
 - `emit.rb`: IR to text. No Prism from here on.
+- `json_literal.rb`: parses a JSON literal written in a DSL file (`meta:`, `input_schema:`, an `elicit`
+  call's `schema:`) and renders it as the Rust inside `serde_json::json!(...)`, shared by reader and body.
 - `notify.rb`: warnings and notices, gated only by environment variables.
+- `openapi.rb`: reads an OpenAPI 3.0/3.1 document (`openapi "spec.json"`) and plans one tool per
+  operation; `Reader#openapi_decl` turns each plan into a params, an `input_schema` and a request.
+- `lsp/`: the language server (`rmcp_dsl lsp`): analysis, hover, inlay hints, definition, outline,
+  completion and the stdio protocol.
+- `skill.rb`: generates the agent skill folder from `SIG`, `Body::ALLOWED_METHODS`,
+  `Notify::CODES` and the shim catalog, so its reference pages cannot drift from the compiler.
 
 ## Decisions that shaped it
 - Ruby names are the default; behaviour follows the receiver's type. A native Ruby `strip`
@@ -40,6 +48,11 @@ writes `Cargo.toml` and `src/main.rs`. Every error is `FILE:LINE:COL: message`.
 - Subprocess escape hatch: `cmd_fn` and `script_fn` register an extern returning `:string` and emit
   a wrapper over one shared `run_subprocess` helper (argv entries or stdin, never shell text;
   10 s timeout, 1 MB cap, env reduced to PATH). Embedded engines were ruled out for now.
+- OpenAPI tools (`openapi "spec.json"`): the document is read at compile time and every accepted
+  operation becomes a tool whose fields come from its path/query/header parameters and JSON body,
+  whose `inputSchema` is the document's (refs bundled under `$defs`), and whose call is an HTTP
+  request built from a `base_url:` setting and an optional `auth_setting:`. What the plan cannot
+  represent faithfully is a compile error naming the operation.
 - The MCP handshake uses an explicit `#[tool_handler(router = Self::tool_router(), name,
   version)]`. The `server_handler` shortcut leaves the server named `rmcp` (rmcp-macros 3.5.0).
 
@@ -61,5 +74,9 @@ writes `Cargo.toml` and `src/main.rs`. Every error is `FILE:LINE:COL: message`.
   gates or the catalog/transpiler consistency check (SPEC.md layers L6, L8).
 - Strictness (2026-10-04): unused `cmd_fn`/`script_fn`/`rust_fn`, unused `params`, unread locals and
   unread block parameters are compile errors, not rustc warnings.
-- Prompts, resources, optional fields, and errors as MCP errors are not supported.
-- Not packaged as a gem. `exe/rmcp_dsl` and `lib/` already follow the gem layout.
+- Opt-in and deprecated by SEP-2577: logging, roots and sampling (declare `feature :logging`,
+  `feature :roots` or `feature :sampling`). Still not built: OAuth and other auth, and collections
+  nested more than one level (a map of maps of maps, or a map of lists of objects). The coverage
+  table in docs/coverage.md is the running list.
+- Packaged as a gem (`rmcp_dsl.gemspec`; `make gem-test` installs it into a throwaway GEM_HOME and
+  uses it from outside the repo).

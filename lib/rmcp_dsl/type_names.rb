@@ -4,8 +4,10 @@ module RmcpDsl
   # How the compiler's internal types read to a person: Sorbet-style names, for `check --types`.
   module TypeNames
     SCALARS = { string: "String", str: "String", i32: "Integer (i32)", i64: "Integer (i64)", f64: "Float",
-                bool: "T::Boolean", strs: "T::Array[String]", i64s: "T::Array[Integer (i64)]",
-                regex: "Regexp", never: "T.noreturn", int: "Integer", block: "ContentBlock", blocks: "T::Array[ContentBlock]" }.freeze
+                bool: "T::Boolean", strs: "T::Array[String]", i64s: "T::Array[Integer (i64)]", f64s: "T::Array[Float]",
+                regex: "Regexp", never: "T.noreturn", int: "Integer", block: "ContentBlock",
+                blocks: "T::Array[ContentBlock]", rcontent: "ResourceContents", rcontents: "T::Array[ResourceContents]",
+                elicit_result: "Elicitation result", roots_result: "T::Array[Root]", ojson: "T.nilable(JSON value)", secret: "Secret" }.freeze
 
     # An internal type symbol ("struct:Name" for an object, :ostr ... for a nil-able) -> its display string.
     def self.display(sym)
@@ -13,6 +15,8 @@ module RmcpDsl
       return SCALARS.fetch(sym) if SCALARS.key?(sym)
       return "T.nilable(#{display(Body::OPT.fetch(sym))})" if Body::OPT.key?(sym)
       return "T::Hash[String, #{display(CompositeTypes.map_value(sym))}]" if CompositeTypes.map_value(sym)
+      return "T::Array[#{CompositeTypes.object_list_element(sym)}]" if CompositeTypes.object_list_sym?(sym)
+      return "T::Array[#{display(CompositeTypes.map_list_value(sym))}]" if CompositeTypes.map_list_sym?(sym)
       return "T::Hash[String, T.untyped]" if sym == :empty_map
       return CompositeTypes::Opaque.name_of(sym) if CompositeTypes::Opaque.symbol?(sym)
 
@@ -25,7 +29,9 @@ module RmcpDsl
         case field["type"]
         when "string_list" then :strs
         when "i64_list" then :i64s
-        when CompositeTypes::MAP_FIELD then CompositeTypes.field_symbol(field["type"])
+        when "f64_list" then :f64s
+        when CompositeTypes::MAP_FIELD, CompositeTypes::MAP_OF_MAP_FIELD then CompositeTypes.field_symbol(field["type"])
+        when CompositeTypes::OBJECT_LIST_FIELD then CompositeTypes.object_list_symbol(field["type"][CompositeTypes::OBJECT_LIST_FIELD, 1])
         when CompositeTypes::OPAQUE_FIELD then CompositeTypes::Opaque.symbol(field["type"])
         when CAMEL then :"struct:#{field['type']}"
         else field["type"].to_sym

@@ -12,7 +12,9 @@ require "rmcp_dsl"
 # rmcp_dsl run FILE.rb [-o DIR] [--release]    build, then start the server on stdio
 # rmcp_dsl FILE.rb -o DIR | --dump-ir | --check   the original form, kept as is
 # rmcp_dsl rbi FILE... [-o DIR]               write DIR/dsl_helpers.rbi (default sorbet/rbi/rmcp_dsl): Sorbet signatures for the helpers
-SUBCOMMANDS = %w[check build run skill rbi lsp].freeze
+# rmcp_dsl init NAME [-o DIR] [--force] [--no-bindings]
+#                                              write NAME.rmcp.rb and a bindings/ folder
+SUBCOMMANDS = %w[check build run init skill rbi lsp].freeze
 
 cmd = SUBCOMMANDS.include?(ARGV.first) ? ARGV.shift : nil
 out = nil
@@ -22,25 +24,33 @@ release = false
 emit_only = false
 format = "text"
 types = false
+force = false
+no_bindings = false
 parser = OptionParser.new do |o|
   o.banner = "usage: rmcp_dsl check FILE.rb [--format json]\n" \
              "       rmcp_dsl build FILE.rb [-o DIR] [--release] [--emit-only]\n" \
              "       rmcp_dsl run FILE.rb [-o DIR] [--release]\n" \
+             "       rmcp_dsl init NAME [-o DIR] [--force] [--no-bindings]\n" \
              "       rmcp_dsl skill [-o DIR]\n" \
              "       rmcp_dsl rbi FILE... [-o DIR]\n" \
              "       rmcp_dsl FILE.rb -o DIR   |   rmcp_dsl FILE.rb --dump-ir   |   rmcp_dsl FILE.rb --check"
   o.on("-o", "--out DIR", "write DIR/Cargo.toml and DIR/src/main.rs (build, run: default build/NAME; skill: parent of the rmcp-dsl/ skill folder, default .; rbi: the folder for dsl_helpers.rbi, default sorbet/rbi/rmcp_dsl)") { |v| out = v }
-  o.on("--version", "print the rmcp_dsl version") { puts RmcpDsl::VERSION; exit }
+  o.on("--version", "print the rmcp_dsl version and the rmcp version it generates servers for") { puts "rmcp_dsl #{RmcpDsl::VERSION} (generates servers for rmcp #{RmcpDsl::RMCP_VERSION})"; exit }
   o.on("--dump-ir", "print the IR as JSON, write nothing") { dump = true }
   o.on("--check", "validate only: parse, type-check, report notifications; write nothing") { check = true }
   o.on("--release", "build, run: pass --release to cargo") { release = true }
   o.on("--emit-only", "build: write the crate and stop before cargo") { emit_only = true }
+  o.on("--force", "init: overwrite NAME.rmcp.rb if it already exists") { force = true }
+  o.on("--no-bindings", "init: do not create a bindings/ folder") { no_bindings = true }
   o.on("--format FMT", %w[text json], "check: text (default) or json, one document on stdout") { |v| format = v }
   o.on("--types", "check --format json: add `types`, the inferred type of every parameter, local and expression") { types = true }
   o.on("--warn SPEC", "all|none|CODE,CODE: which warnings to print (sets RMCP_DSL_WARN)") { |v| ENV["RMCP_DSL_WARN"] = v }
   o.on("--notice SPEC", "all|none|CODE,CODE: which notices to print (sets RMCP_DSL_NOTICE)") { |v| ENV["RMCP_DSL_NOTICE"] = v }
 end
 parser.parse!
+if cmd != "init" && (force || no_bindings)
+  abort parser.to_s
+end
 if cmd == "lsp" # the language server: LSP on stdin/stdout, nothing else on stdout
   abort parser.to_s unless ARGV.empty?
   RmcpDsl::Lsp::Server.new($stdin, $stdout).run
@@ -63,11 +73,34 @@ when "rbi"
   abort parser.to_s if dump || check || release || emit_only || json
 when "skill"
   abort parser.to_s if dump || check || release || emit_only || json
+when "init"
+  abort parser.to_s if dump || check || release || emit_only || json
+  out ||= "."
 when "run"
   abort parser.to_s if dump || check || emit_only || json
   out ||= File.join("build", File.basename(file, ".rb"))
 else
   abort parser.to_s if [out, dump, check].count { |m| m } != 1 || release || emit_only || json
+end
+
+# The starter file `init` writes: the smallest server the compiler accepts, named for the project.
+def init_source(name)
+  <<~RUBY
+    # typed: true
+    server #{name.inspect}, version: "0.1.0" do
+      params :EchoParams do
+        field :message, :string, description: "Text to echo back"
+      end
+
+      tool :echo, params: :EchoParams, description: "Echo the message back" do
+        body do |message|
+          message
+        end
+      end
+
+      transport :stdio
+    end
+  RUBY
 end
 
 def write_crate(ir, file, out)
@@ -109,6 +142,38 @@ if cmd == "rbi"
     File.write(path, text)
     puts path
   rescue RmcpDsl::CompileError, SystemCallError => e
+    warn "rmcp_dsl: #{e.message}"
+    exit 1
+  end
+  exit
+end
+
+if cmd == "init"
+  name = file
+  unless name.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
+    warn "rmcp_dsl: invalid name #{name.inspect}; use letters, digits, a dot, underscore or hyphen, starting with a letter or digit"
+    exit 1
+  end
+
+  begin
+    path = File.join(out, "#{name}.rmcp.rb")
+    if File.exist?(path) && !force
+      warn "rmcp_dsl: #{path} already exists; pass --force to overwrite"
+      exit 1
+    end
+
+    FileUtils.mkdir_p(out)
+    File.write(path, init_source(name))
+    puts path
+
+    unless no_bindings
+      bindings = File.join(out, "bindings")
+      FileUtils.mkdir_p(bindings)
+      gitkeep = File.join(bindings, ".gitkeep")
+      File.write(gitkeep, "") unless File.exist?(gitkeep)
+      puts bindings
+    end
+  rescue SystemCallError => e
     warn "rmcp_dsl: #{e.message}"
     exit 1
   end

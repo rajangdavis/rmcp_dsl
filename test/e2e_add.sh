@@ -1,7 +1,7 @@
 #!/bin/sh
 # L5 end to end: start the generated server, speak MCP over stdio, check add(2,3).
 # usage: sh test/e2e_add.sh [CRATE_DIR]      (default /tmp/add-out)
-# Build the crate first:  ruby exe/rmcp_dsl examples/add.rb -o /tmp/add-out
+# Build the crate first:  ruby exe/rmcp_dsl examples/add.rmcp.rb -o /tmp/add-out
 set -eu
 dir=${1:-/tmp/add-out}
 init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}'

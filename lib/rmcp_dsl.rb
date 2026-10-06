@@ -47,13 +47,17 @@ end
 
 require_relative "rmcp_dsl/suggest"
 require_relative "rmcp_dsl/docs"
+require_relative "rmcp_dsl/features"
 require_relative "rmcp_dsl/schema"
 require_relative "rmcp_dsl/notify"
 require_relative "rmcp_dsl/regex_translate"
 require_relative "rmcp_dsl/bindings"
 require_relative "rmcp_dsl/composite_types"
 require_relative "rmcp_dsl/type_names"
+require_relative "rmcp_dsl/json_literal"
 require_relative "rmcp_dsl/body"
+
+require_relative "rmcp_dsl/openapi"
 require_relative "rmcp_dsl/reader"
 require_relative "rmcp_dsl/emit"
 require_relative "rmcp_dsl/cargo_build"

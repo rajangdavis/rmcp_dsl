@@ -84,7 +84,7 @@ class TestSkill < Minitest::Test
 
   def test_the_cli_page_names_every_subcommand
     cli = @files.fetch("rmcp-dsl/references/cli.md")
-    %w[check build run skill].each { |cmd| assert_includes cli, "rmcp_dsl #{cmd}" }
+    %w[check build run init skill].each { |cmd| assert_includes cli, "rmcp_dsl #{cmd}" }
   end
 
   def test_every_embedded_example_compiles

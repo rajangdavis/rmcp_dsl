@@ -10,6 +10,8 @@ callt() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name
 callsl() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{"text":"%s","start":%s,"len":%s}}}\n' "$1" "$2" "$3" "$4" "$5"; }
 callc() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{"n":%s}}}\n' "$1" "$2" "$3"; }
 calln() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{"text":"%s","n":%s}}}\n' "$1" "$2" "$3" "$4"; }
+call_meta() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s,"_meta":%s}}\n' "$1" "$2" "$3" "$4"; }
+callf() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{"values":%s}}}\n' "$1" "$2" "$3"; }
 
 out=$( { printf '%s\n%s\n' "$init" "$inited"
          callt 10 parts "a,b,,c,,"
@@ -130,6 +132,19 @@ out=$( { printf '%s\n%s\n' "$init" "$inited"
          callt 244 classify "xyz"
          callc 245 big_or_list 3
          callc 246 big_or_list 5
+         printf '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}\n'
+         callf 300 float_join '[]'
+         callf 301 float_join '[1.5,2.5,1.25,0.75,3.5]'
+         callf 302 float_join '[1.5,2.5,0.5]'
+         callf 303 float_stats '[1.5,2.5,1.25]'
+         callf 304 float_order '[2.5,1.25,2.5,0.75]'
+         callf 305 float_filter '[1.5,2.5,1.25]'
+         callf 306 float_pick '[2.5,7.25,2.5]'
+         callf 307 float_literal '[1.5,2.5]'
+         callf 308 float_join '[1.0,2.5,2.0]'
+         call_meta 250 announce '{"text":"a,b"}' '{"progressToken":11}'
+         call_meta 260 slow_count '{"n":500}' '{"progressToken":22}'
+         printf '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":260}}\n'
          sleep 4; } | (cd "$dir" && cargo run -q) )
 printf '%s\n' "$out" | cut -c1-200
 
@@ -184,7 +199,7 @@ is 122 "$out" "1000"
 is 123 "$out" "0"
 is 124 "$out" "-7"
 is 125 "$out" "42"
-has 126 "$out" "\"isError\":true"; has 126 "$out" "error: integer overflow at examples/listkit.rb"; has 126 "$out" "does not fit in i64"
+has 126 "$out" "\"isError\":true"; has 126 "$out" "error: integer overflow at examples/listkit.rmcp.rb"; has 126 "$out" "does not fit in i64"
 is 130 "$out" "example.com/x"
 is 131 "$out" ""
 is 132 "$out" "a"
@@ -197,7 +212,7 @@ is 141 "$out" "1000"
 for id in 142 143 144; do has $id "$out" "\"isError\":true"; has $id "$out" "error: invalid value for Integer()"; done
 is 150 "$out" "ababab"
 is 151 "$out" ""
-has 152 "$out" "\"isError\":true"; has 152 "$out" "error: negative argument at examples/listkit.rb"
+has 152 "$out" "\"isError\":true"; has 152 "$out" "error: negative argument at examples/listkit.rmcp.rb"
 is 160 "$out" "h-é-y"
 is 161 "$out" ""
 is 170 "$out" "2"
@@ -254,4 +269,37 @@ is 243 "$out" "a-word"
 is 244 "$out" "short"
 is 245 "$out" "1,2,3"
 is 246 "$out" "big"
+# float lists: the published schema, the min/max checks and answers Ruby gives too.
+printf '%s\n' "$out" | ruby -rjson -e '
+  line = STDIN.read.lines.find { |l| l.include?(%q{"id":5,}) } or abort "no tools/list response"
+  tool = JSON.parse(line).dig("result", "tools").find { |t| t["name"] == "float_join" } or abort "no float_join tool"
+  prop = tool.dig("inputSchema", "properties", "values") or abort "no values property"
+  items = prop["items"] || Array(prop["anyOf"]).filter_map { |s| s["items"] }.first
+  abort "values must be an array of numbers" unless items && items["type"] == "number"
+  abort "values must have minItems 1" unless prop["minItems"] == 1 || Array(prop["anyOf"]).any? { |s| s["minItems"] == 1 }
+  abort "values must have maxItems 4" unless prop["maxItems"] == 4 || Array(prop["anyOf"]).any? { |s| s["maxItems"] == 4 }
+' || fail "float list inputSchema"
+has 300 "$out" '"isError":true'; has 300 "$out" 'fewer than the minimum of 1'
+has 301 "$out" '"isError":true'; has 301 "$out" 'more than the maximum of 4'
+is 302 "$out" "1.5,2.5,0.5"
+has 303 "$out" '"total":5.25'; has 303 "$out" '"smallest":1.25'; has 303 "$out" '"largest":2.5'; has 303 "$out" '"halved":[0.75,1.25,0.625]'
+is 304 "$out" "2.5 1.25 0.75"
+is 305 "$out" "2.5|1.5,1.25|2.5|true|true|1"
+is 306 "$out" "2.5|2.5|7.25|true|false|3"
+is 307 "$out" "1.5/2.5 vs 1.5/2.5/0.5 = 4.5"
+is 308 "$out" "1.0,2.5,2.0"
+# each + progress: the block runs for its effects over a list; the list each returns is dropped.
+is 250 "$out" "announced"
+printf '%s\n' "$out" | grep -q '"method":"notifications/progress"' || fail "progress notification"
+printf '%s\n' "$out" | grep -q '"progressToken":11' || fail "progress token"
+printf '%s\n' "$out" | grep -q '"message":"a"' || fail "progress message a"
+printf '%s\n' "$out" | grep -q '"message":"b"' || fail "progress message b"
+# Cooperative cancellation: rmcp removes the request's token on notifications/cancelled, and the loop
+# observes `cancelled?` around its progress await and raises. The response is suppressed, so only the
+# progress notifications already sent appear; fewer than n proves the loop stopped early.
+if printf '%s\n' "$out" | grep -q '"id":260,'; then fail "cancelled call 260 should get no response"; fi
+n_prog=$(printf '%s\n' "$out" | grep -c '"progressToken":22' || true)
+[ "$n_prog" -gt 0 ] || fail "the cancelled call sent no progress notification"
+[ "$n_prog" -lt 500 ] || fail "the cancelled call did not stop early ($n_prog of 500 progress notifications)"
+echo "cancelled after $n_prog of 500 progress notifications (rmcp suppressed the response)"
 echo "OK: lists, nil-able values, case/when and the character methods answer like Ruby"

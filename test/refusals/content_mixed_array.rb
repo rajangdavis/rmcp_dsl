@@ -1,4 +1,4 @@
-# expect: array elements must all be strings, all be integers or all be content blocks
+# expect: array elements must all be strings, all be numbers, all be content blocks or all be resource contents
 server "refuse", version: "0.1.0" do
   params :P do
     field :t, :string

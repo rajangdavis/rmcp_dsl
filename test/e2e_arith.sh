@@ -55,7 +55,7 @@ has 21 "$out" '"text":"-5"'
 has 7 "$out" '"text":"-3"'
 # friendly overflow: what, where, how to fix
 for id in 4 5 11 12 13; do
-  has $id "$out" 'error: integer overflow at examples/arith.rb:'
+  has $id "$out" 'error: integer overflow at examples/arith.rmcp.rb:'
   has $id "$out" 'does not fit in i32 (-2147483648..=2147483647)'
   has $id "$out" 'Fix:'
 done
@@ -64,9 +64,9 @@ has 12 "$out" 'negating -2147483648 does not fit in i32'
 has 5 "$out" 'in tool `multiply`: 65536 * 65536'
 has 13 "$out" 'in tool `subtract`'
 # friendly division by zero
-has 10 "$out" 'error: division by zero at examples/arith.rb:'
+has 10 "$out" 'error: division by zero at examples/arith.rmcp.rb:'
 has 10 "$out" 'Fix: check that the divisor is not zero'
-has 15 "$out" 'error: division by zero at examples/arith.rb:'
+has 15 "$out" 'error: division by zero at examples/arith.rmcp.rb:'
 has 15 "$out" 'in tool `divide_like_rust`'
 has 22 "$out" '"text":"-1"'
 has 23 "$out" '"text":"1"'

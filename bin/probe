@@ -14,6 +14,159 @@ require "tmpdir"
 
 EXE = File.expand_path("../exe/rmcp_dsl", __dir__)
 
+# A helper with a nil-able parameter: the tool passes `s.index("/")`, which may be nil.
+NILABLE_PARAM_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :P do
+      field :s, :string
+    end
+    helper :show, args: [:i64?], returns: :string do |n|
+      n.to_s
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |s|
+        a = show(7)
+        b = show(s.index("/"))
+        a + b
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# A helper with a keyword parameter, called explicitly and left out for its default.
+KEYWORD_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :P do
+      field :s, :string
+    end
+    helper :joined, args: [:string], returns: :string, kw: { sep: [:string, false] } do |text, sep: "-"|
+      text + sep
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |s|
+        a = joined(s)
+        b = joined(s, sep: "!")
+        a + b
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# A list of floats: sum, min, sort and include?.
+FLOAT_LIST_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :P do
+      field :xs, :f64_list
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |xs|
+        "sum #{xs.sum}, min #{xs.min || 0.0}, sorted #{xs.sort.join(",")}, has #{xs.include?(2.5)}"
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# An optional nested object read with Ruby safe navigation.
+SAFE_NAV_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :Address do
+      field :city, :string
+      field :zip, :string
+    end
+    params :P do
+      field :a, :Address, optional: true
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |a|
+        "#{a&.city || "none"} #{a&.zip || "00000"}"
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# A list of another params struct: iterate it, map it to strings, and read the first element with safe navigation.
+OBJECT_LIST_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :Address do
+      field :city, :string
+      field :zip, :string
+    end
+    params :P do
+      field :offices, list(:Address), min_items: 1, max_items: 3
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |offices|
+        text = offices.map { |o| "#{o.city}:#{o.zip}" }.join(",")
+        "a #{offices.length}, b #{offices.first&.city || "none"}, c #{text}"
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# A map of another params struct: index it, iterate the values and select by a field, reading fields with &..
+MAP_OF_OBJECTS_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :Address do
+      field :city, :string
+      field :zip, :string
+    end
+    params :P do
+      field :roster, map(:Address)
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |roster|
+        names = roster.keys.join(",")
+        "n #{roster.length} #{names} #{roster["ann"]&.city || "none"} #{roster.values.first&.zip || "-"} #{roster.select { |k, v| !k.empty? && !v.city.empty? }.length}"
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# A map of maps: nested indexing, values as a list of maps, and select/merge preserving the value type.
+MAP_OF_MAPS_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    params :P do
+      field :grid, map(map(:i64)), min_items: 1, max_items: 3
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |grid|
+        inner = grid["a"]
+        "n #{grid.length} #{grid["a"]["b"] || -1} #{grid.values.length} #{grid.select { |k, v| !k.empty? && v.length > 0 }.size} #{inner.nil?} #{grid.merge({}).length}"
+      end
+    end
+    transport :stdio
+  end
+RB
+
+# An async rust_fn: `rust_fn ... async: true` declares the injected `async fn`, and the tool body that
+# calls it is compiled async and awaits it (`rust(:double, n).await`).
+ASYNC_PROBE = <<~'RB'
+  server "probe", version: "0.1.0" do
+    rust_item <<~'RS'
+      async fn double(x: i64) -> i64 {
+          std::future::ready(()).await;
+          x * 2
+      }
+    RS
+    rust_fn :double, args: [:i64], returns: :i64, async: true
+    params :P do
+      field :n, :i64
+    end
+    tool :t, params: :P, description: "probe" do
+      body do |n|
+        rust(:double, n).to_s
+      end
+    end
+    transport :stdio
+  end
+RB
+
 PROBES = [
   [:control, "gsub with a regex",            's.gsub(/\d/, "#")'],
   [:control, "split.map.join",               's.split.map { |w| w.capitalize }.join(" ")'],
@@ -69,23 +222,83 @@ PROBES = [
   [:probe, "Integer(s)",                     "Integer(s, 10).to_s"],
 
   [:probe, "regex match?",                   'if s.match?(/\Ahttps?:/) then "y" else "n" end'],
-  [:probe, "regex =~",                       'if s =~ /x/ then "y" else "n" end'],
+  [:probe, "regex =~ character index",        "(s =~ /x/).to_s"],
+  [:probe, "regex =~ or default",             "((s =~ /x/) || -1).to_s"],
+
   [:probe, "lazy quantifier",                's.sub(/<.*?>/, "")'],
   [:probe, "dotall + ignore case",           's.gsub(/<script.*?<\/script>/mi, "")'],
   [:probe, "gsub with a block",              "s.gsub(/\\d/) { |d| d }"],
 
   [:probe, "array literal",                  '["a", "b"].join(",")'],
+  [:probe, "float array literal / join",     '[1.0, 2.5].join(",")'],
+  [:probe, "float list sum",                 '[1.5, 2.5, 0.5].sum.to_s'],
+  [:probe, "float list map with a float",    '[1.5, 2.5].map { |x| x * 0.5 }.join(",")'],
+  [:probe, "float list min / max",           '[1.5, 2.5].max.to_s'],
   [:probe, "list each",                      's.split.each { |w| w }.length.to_s'],
+  [:probe, "list each with a guard",         's.split.each { |w| raise("empty") if w.empty? }.join(",")'],
+  [:probe, "map each with a block",          "m = { \"a\" => s.length, \"b\" => 2 }; m.each { |k, v| k + v.to_s }.length.to_s"],
+  [:probe, "each with return",               's.split.each { |w| return "none" if w.empty? }.join(",")'],
   [:probe, "list select",                    's.split.select { |w| w.length > 2 }.length.to_s'],
   [:probe, "list find",                      's.split.find { |w| w.length > 2 } || ""'],
   [:probe, "list first / last",              's.split.last || ""'],
   [:probe, "list [index]",                   's.split[1] || ""'],
   [:probe, "n.times",                        '3.times.map { |i| i.to_s }.join'],
   [:probe, "hash literal",                   '{ "a" => 1 }.length.to_s'],
+  [:probe, "map map with a block",           "m = { \"a\" => s.length, \"b\" => 2 }; m.map { |k, v| k + \"=\" + v.to_s }.join(\",\")"],
+  [:probe, "map select with a block",        "m = { \"a\" => s.length, \"b\" => 2 }; m.select { |k, v| k != \"\" && v > 1 }.length.to_s"],
+  [:probe, "map reject with a block",        "m = { \"a\" => s.length, \"b\" => 2 }; m.reject { |k, v| k == \"\" || v > 1 }.length.to_s"],
 
   [:probe, "raise in a branch",              'if n > 1 then raise "boom" else "ok" end'],
   [:probe, "return (guard clause)",                         "return \"none\" if s.empty?\n          s"],
-  [:probe, "def inside a body",              "def helper(x) = x\n          helper(s)"]
+  [:probe, "def inside a body",              "def helper(x) = x\n          helper(s)"],
+
+  # The request-context built-ins a tool body may read.
+  [:probe, "client_name",                      'client_name || "x"'],
+  [:probe, "client_version",                   'client_version || "x"'],
+  [:probe, "protocol_version",                 'protocol_version || "x"'],
+  [:probe, "request_id",                       "request_id"],
+  [:probe, "progress_token",                   'progress_token || "x"'],
+  [:probe, "cancelled?",                       'cancelled? ? "y" : "n"'],
+  [:probe, "cancelled? in an each loop",       "(1..n).each { |i| progress(i); raise(\"cancelled\") if cancelled? }\n          \"done\""],
+
+  # The progress statement a tool body may use on a line of its own.
+  [:probe, "progress(value)",                  "progress(1)\n          s"],
+  [:probe, "progress(value, total:, message:)", "progress(1, total: 10, message: \"half\")\n          s"],
+
+  # The hide/show statements a tool body may use to change the advertised list at run time.
+  [:probe, "hide_tool(name)",                  "hide_tool(:t)\n          s"],
+  [:probe, "show_tool(name)",                  "show_tool(:t)\n          s"],
+
+  # The elicitation call a tool body may use, and the two fields of its result.
+  [:probe, "elicit(message, schema:)",        'elicit(s, schema: { "type" => "object", "properties" => { "name" => { "type" => "string" } } }).content.to_s'],
+  [:probe, "elicit result .action",            'elicit(s, schema: { "type" => "object", "properties" => {} }).action'],
+
+  # The roots call a tool body may use; `server_for` adds `feature :roots`, which the gate requires.
+  [:probe, "roots() map uri/name",             'roots().map { |r| "#{r.uri}=#{r.name || "-"}" }.join(",")'],
+  [:probe, "roots() length",                   "roots().length.to_s"],
+  [:probe, "roots() each (statement)",         "roots().each { |r| r.uri }\n          \"ok\""],
+
+  # The sampling call a tool body may use; `server_for` adds `feature :sampling`, which the gate requires.
+  [:probe, "sample(prompt, max_tokens:)",       'sample(s, max_tokens: 64).text || "-"'],
+  [:probe, "sample(... system/temperature/stop)", 'sample(s, max_tokens: n, system: "be brief", temperature: 0.2, stop: ["STOP"]).model'],
+  [:probe, "sample result .stop_reason",        'sample(s, max_tokens: 4).stop_reason || "-"'],
+  [:probe, "sample result .role",              'sample(s, max_tokens: 4).role'],
+
+  # The log statement a tool body may use; `server_for` adds `feature :logging`, which the gate requires.
+  [:probe, "log(:info, message)",              "log(:info, \"hello\")\n          s"],
+  [:probe, "log(\"warning\", message)",        "log(\"warning\", s)\n          s"],
+
+  # Lists of floats, and an optional nested object read with safe navigation.
+  [:probe, "f64 list: sum/min/sort/join/include?", { source: FLOAT_LIST_PROBE }],
+  [:probe, "optional object &.field", { source: SAFE_NAV_PROBE }],
+  [:probe, "object list: each/map/first&.field", { source: OBJECT_LIST_PROBE }],
+  [:probe, "map of objects: index/values/select", { source: MAP_OF_OBJECTS_PROBE }],
+  [:probe, "map of maps: nested index/values/merge", { source: MAP_OF_MAPS_PROBE }],
+
+  # A helper with a nil-able parameter and one with a keyword argument.
+  [:probe, "helper with a nil-able parameter", { source: NILABLE_PARAM_PROBE }],
+  [:probe, "helper with a keyword argument", { source: KEYWORD_PROBE }],
+  [:probe, "async rust_fn", { source: ASYNC_PROBE }]
 ].freeze
 
 # The compiler refuses a |...| parameter the body never reads, so declare only those it uses.
@@ -93,9 +306,14 @@ def server_for(body)
   # Text inside a string literal is not a use of s or n, but an interpolation inside one is.
   code = body.gsub(/"((?:[^"\\]|\\.)*)"/) { Regexp.last_match(1).scan(/#\{[^}]*\}/).join }
   used = %w[s n].select { |v| code.match?(/\b#{v}\b/) }
+  # `log` and `roots` are gated by `feature :logging` / `feature :roots`, so a probe that uses one declares it.
+  feature = +""
+  feature << "  feature :logging\n" if code.match?(/\blog\b/)
+  feature << "  feature :roots\n" if code.match?(/\broots\b/)
+  feature << "  feature :sampling\n" if code.match?(/\bsample\b/)
   <<~RB
     server "probe", version: "0.1.0" do
-      params :P do
+    #{feature}  params :P do
         field :s, :string
         field :n, :i32
       end
@@ -110,9 +328,9 @@ def server_for(body)
 end
 
 # "ok", or the compiler's refusal message.
-def verdict(dir, idx, body)
+def verdict(dir, idx, probe)
   file = File.join(dir, "probe_#{idx}.rb")
-  File.write(file, server_for(body))
+  File.write(file, probe.is_a?(String) ? server_for(probe) : probe.fetch(:source))
   out, err, = Open3.capture3(RbConfig.ruby, EXE, "check", file, "--format", "json")
   doc = JSON.parse(out)
   doc["ok"] ? "ok" : doc.dig("error", "message").to_s
@@ -121,7 +339,7 @@ rescue JSON::ParserError
 end
 
 results = Dir.mktmpdir("probe") do |dir|
-  PROBES.each_with_index.map { |(kind, name, body), i| [kind, name, verdict(dir, i, body)] }
+  PROBES.each_with_index.map { |(kind, name, probe), i| [kind, name, verdict(dir, i, probe)] }
 end
 
 width = results.map { |_, name, _| name.length }.max

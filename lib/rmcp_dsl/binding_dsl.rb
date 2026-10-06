@@ -32,7 +32,7 @@ module RmcpDsl
 
   module BindingDsl
     def crate(_name, _version) = nil
-    def rust(_template) = nil
+    def rust(_template, async: false) = nil
     def no_reference(_reason) = nil
     def example(_method, *_args, expect:) = nil
   end

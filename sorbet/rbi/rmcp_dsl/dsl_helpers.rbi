@@ -8,8 +8,17 @@ class ServerScope
   sig { params(url: String).returns(String) }
   def checked_host(url); end
 
+  sig { params(s: String).returns(String) }
+  def decorate(s); end
+
+  sig { params(host: String, port: T.nilable(Integer), scheme: String).returns(String) }
+  def endpoint(host, port, scheme: "http"); end
+
   sig { params(host: String, port: Integer, addrs: T::Array[String]).returns(String) }
   def pin_arg(host, port, addrs); end
+
+  sig { params(typed: String).returns(T::Array[String]) }
+  def topic_choices(typed); end
 end
 
 class ToolScope
@@ -19,8 +28,17 @@ class ToolScope
   sig { params(url: String).returns(String) }
   def checked_host(url); end
 
+  sig { params(s: String).returns(String) }
+  def decorate(s); end
+
+  sig { params(host: String, port: T.nilable(Integer), scheme: String).returns(String) }
+  def endpoint(host, port, scheme: "http"); end
+
   sig { params(host: String, port: Integer, addrs: T::Array[String]).returns(String) }
   def pin_arg(host, port, addrs); end
+
+  sig { params(typed: String).returns(T::Array[String]) }
+  def topic_choices(typed); end
 end
 
 class PromptScope
@@ -30,8 +48,17 @@ class PromptScope
   sig { params(url: String).returns(String) }
   def checked_host(url); end
 
+  sig { params(s: String).returns(String) }
+  def decorate(s); end
+
+  sig { params(host: String, port: T.nilable(Integer), scheme: String).returns(String) }
+  def endpoint(host, port, scheme: "http"); end
+
   sig { params(host: String, port: Integer, addrs: T::Array[String]).returns(String) }
   def pin_arg(host, port, addrs); end
+
+  sig { params(typed: String).returns(T::Array[String]) }
+  def topic_choices(typed); end
 end
 
 class ResourceScope
@@ -41,6 +68,15 @@ class ResourceScope
   sig { params(url: String).returns(String) }
   def checked_host(url); end
 
+  sig { params(s: String).returns(String) }
+  def decorate(s); end
+
+  sig { params(host: String, port: T.nilable(Integer), scheme: String).returns(String) }
+  def endpoint(host, port, scheme: "http"); end
+
   sig { params(host: String, port: Integer, addrs: T::Array[String]).returns(String) }
   def pin_arg(host, port, addrs); end
+
+  sig { params(typed: String).returns(T::Array[String]) }
+  def topic_choices(typed); end
 end

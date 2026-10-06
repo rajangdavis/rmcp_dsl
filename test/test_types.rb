@@ -16,7 +16,7 @@ class TestTypes < Minitest::Test
   EXAMPLES = File.expand_path("../examples", __dir__)
 
   def run_check(name, *flags)
-    out, err, status = Open3.capture3(RbConfig.ruby, EXE, "check", File.join(EXAMPLES, "#{name}.rb"), "--format", "json", *flags)
+    out, err, status = Open3.capture3(RbConfig.ruby, EXE, "check", File.join(EXAMPLES, "#{name}.rmcp.rb"), "--format", "json", *flags)
     [JSON.parse(out, symbolize_names: true), err, status]
   end
 
@@ -24,7 +24,7 @@ class TestTypes < Minitest::Test
 
   # The source text an entry points at: lines and columns are 1-based, end_col is exclusive, columns count bytes.
   def source_of(name, entry)
-    lines = File.binread(File.join(EXAMPLES, "#{name}.rb")).lines
+    lines = File.binread(File.join(EXAMPLES, "#{name}.rmcp.rb")).lines
     first = lines[entry[:line] - 1]
     return first.byteslice(entry[:col] - 1, entry[:end_col] - entry[:col]) if entry[:line] == entry[:end_line]
 
@@ -44,7 +44,7 @@ class TestTypes < Minitest::Test
   end
 
   def test_types_needs_check_with_json
-    _out, _err, status = Open3.capture3(RbConfig.ruby, EXE, "check", File.join(EXAMPLES, "statkit.rb"), "--types")
+    _out, _err, status = Open3.capture3(RbConfig.ruby, EXE, "check", File.join(EXAMPLES, "statkit.rmcp.rb"), "--types")
     refute status.success?
   end
 
@@ -61,7 +61,7 @@ class TestTypes < Minitest::Test
   end
 
   def test_the_compiled_ir_is_the_same_with_and_without_collecting
-    path = File.join(EXAMPLES, "statkit.rb")
+    path = File.join(EXAMPLES, "statkit.rmcp.rb")
     collector = RmcpDsl::TypeNames::Collector.new(path)
     assert_equal RmcpDsl.read(path), RmcpDsl.read(path, types: collector)
     refute_empty collector.entries
@@ -140,7 +140,7 @@ class TestTypes < Minitest::Test
 
   def test_an_interpolation
     list = types("webkit")
-    line = File.readlines(File.join(EXAMPLES, "webkit.rb"))[47]
+    line = File.readlines(File.join(EXAMPLES, "webkit.rmcp.rb"))[47]
     col = line.index('"#{host}:#{port}:[#{addr}]"') + 1
     found = list.select { |e| e[:line] == 48 && e[:col] == col && e[:kind] == "expression" }
     assert_equal ["String"], found.map { |e| e[:type] }

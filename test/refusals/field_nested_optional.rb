@@ -1,4 +1,4 @@
-# expect: an optional nested object is not supported yet
+# expect: may be nil, so read its fields with `&.`
 server "refuse", version: "0.1.0" do
   params :Inner do
     field :a, :string
@@ -8,7 +8,7 @@ server "refuse", version: "0.1.0" do
   end
   tool :t, params: :P, description: "x" do
     body do |inner|
-      "#{inner}"
+      inner.a
     end
   end
   transport :stdio

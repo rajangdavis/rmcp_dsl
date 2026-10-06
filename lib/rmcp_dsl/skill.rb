@@ -132,26 +132,31 @@ module RmcpDsl
       `params` before the tools that use them. Names are symbols or string literals as listed below;
       anything else is refused. A `field` takes `description:`, `optional: true` (the value is nil-able in
       the body), `default:` (the field is then always present), and JSON schema constraints that the generated
-      server also enforces: `min:` and `max:` on numbers, `min_length:`, `max_length:`, `pattern:` (a Rust
-      regex) and `enum:` on strings, `min_items:` and `max_items:` on lists. A field is a scalar, a list
-      (`:string_list`, `:i64_list`) or another `params` declared above it (a nested object, read as
-      `address.city`); `format:` (`:email`, `:uri`, ...) is advice to the client. A `tool`
+      server also enforces: `min:` and `max:` on numbers, `exclusive_min:` and `exclusive_max:` (which the value
+      must be above and below), `multiple_of:` (a positive integer the value must be a multiple of, for the
+      integer types), `min_length:`, `max_length:`, `pattern:` (a Rust regex) and `enum:` on strings,
+      `min_items:` and `max_items:` on lists. A field is a scalar, a list
+      (`:string_list`, `:i64_list`, `:f64_list`, or `list(:Address)` for a list of objects) or another `params`
+      declared above it (a nested object, read as `address.city`, or `address&.city` when the field is
+      `optional: true`); `format:` (`:email`, `:uri`, ...) is advice to the client. A `tool`
       takes `title:` and the annotations `read_only:`, `destructive:`, `idempotent:` and `open_world:`,
       which tell a client whether the tool is safe to call without asking. A `prompt` has the same shape as a tool and returns
-      the text of one user message; MCP passes prompt arguments as strings, so its params may only have :string
+      one user message, as text or content blocks; MCP passes prompt arguments as strings, so its params may only have :string
       fields. A tool may declare a structured result: `output :Name do field ... end` (fields take only
       `description:` and `optional:`), and `tool ..., output: :Name`. The body then ends in
       `result(:Name, field: value, ...)`, giving every field once; clients get typed JSON and an output schema.
       JSON-shaped values are basic typed Ruby types: a field may be a typed map with string keys and one value
-      type, `map(:i64)`, `map(:string)`, `map(:f64)`, `map(:bool)` or `map(list(:string))` (and `list(:string)` is
-      `:string_list`). A body reads one with `m["k"]` (nil-able: `|| default`), `fetch`, `key?`, `keys`, `values`,
+      type, `map(:i64)`, `map(:string)`, `map(:f64)`, `map(:bool)`, `map(list(:string))`, a map of a params object
+      (`map(:Address)`) or a nested map (`map(map(:i64))`) (and `list(:string)` is `:string_list`). A body reads
+      one with `m["k"]` (nil-able: `|| default`; on a map of objects read fields with `&.`, and `m["a"]["b"]`
+      indexes a map of maps), `fetch`, `key?`, `keys`, `values` (a list of objects or maps when the value is one),
       `size`, `empty?` and `merge`, builds one with `{ "a" => 1 }` (string keys, values of one type) or
       `items.tally`, and keys come back sorted (a Rust BTreeMap). Nothing changes a map in place. More complicated
       JSON belongs in a binding: it declares a type with `class Value < RmcpDsl::Opaque; type_rust "serde_json::Value", wire: true; end`,
       the DSL holds values of it, passes them to that binding's functions and, with `wire: true`, takes them as `field :doc, Json::Value`.
       `meta:` on a tool, prompt or resource is static metadata sent as `_meta`, a JSON
       object literal such as `{ "com.example/tier" => "free" }` with MCP-valid keys (reverse-DNS prefix; reserved
-      prefixes and `progressToken` are refused). A tool body may end in content blocks instead of a string: `text(s)`,
+      prefixes and `progressToken` are refused). A tool body or a prompt message may end in content blocks instead of a string: `text(s)`,
       `image(base64, "image/png")`, `audio(base64, "audio/wav")`, `resource_link(uri, name: ..., size: ...)`,
       `embedded_text(uri, text, mime_type: ...)` and `embedded_blob(uri, base64)`, one or an array of them, each with
       optional `audience:` and `priority:`; literal base64, MIME types and URIs are checked at compile time.
@@ -161,18 +166,26 @@ module RmcpDsl
       them the list of resources changed. A resource `size:` is its size in bytes (checked when the body is a plain
       string). A resource template may use `{+path}` (slashes allowed), `{a,b}` (several values), `{x*}` (a
       :string_list field) and `{?q,limit}` (optional :string fields, nil when absent). `page_size: 10` on the server
-      pages tools, prompts, resources and templates, with opaque cursors.
+      pages tools, prompts, resources and templates, with opaque cursors. `setting :token, env: "API_TOKEN", secret: true`
+      declares a value read from the environment at startup (`default:`, `optional:`); a body reads it with
+      `setting(:token)`, and a secret can only be passed to a binding or rust_fn function (never printed, returned or
+      compared). `input_schema: { ... }` on a tool publishes a hand-written schema, checked against the fields.
       A prompt can be a conversation:
       use `message :assistant do ... end` and `message :user do |topic| ... end` blocks, in order, instead of
-      one `body`. A prompt argument with `enum:` values is completed automatically (the values that start with what
+      one `body`. A prompt argument is completed automatically: an `enum:` field offers its values, a `:string` field
+      may name a helper with `complete: :helper` (one `:string` argument, returning `:string_list`), and a
+      `complete do |arg, typed| ... end` block answers for every argument at once (the values that start with what
       was typed). A resource whose `uri:` has `{placeholders}` (plain {name}, RFC 6570 level 1) is a template: give
-      it `params:` with a :string field per placeholder; the body takes those values, and a `raise` means the
+      it `params:` with a :string field per placeholder (its arguments are completed too, by `enum:`/`complete:` or a
+      `complete` block); the body takes those values, and a `raise` means the
       resource does not exist. The server takes `title:`, `description:`, `website_url:` and `icon:` (an http, https or
       data: URI), and tools, prompts and resources take `icon:`. A resource also takes `audience:` (`["user"]`,
       `["assistant"]` or both) and `priority:` (0 to 1). `transport :stdio` serves over standard input and
       output; `transport :http, port: 8080` serves streamable HTTP at `/mcp` on 127.0.0.1 with rmcp's default
-      sessions and host check. A `resource` is readable text at a `uri:` ("scheme://path") whose body takes no parameters and runs on
-      every read. `instructions:` on the server tells a model how to use it. The declarations are generated from the compiler's
+      sessions and host check. A `resource` is readable content at a `uri:` ("scheme://path") whose body takes no
+      parameters and runs on every read: a plain string is one text content, and `text(s)` or `blob(base64)` (each
+      with optional `uri:`, default the uri read, and `mime_type:`, default the resource's) build resource contents,
+      alone or as an array. `instructions:` on the server tells a model how to use it. The declarations are generated from the compiler's
       signature table, so this page matches the installed version.
     MD
 
@@ -182,8 +195,8 @@ module RmcpDsl
       A body is `body do |a, b| ... end`. The block parameters must be field names of the tool's
       `params`, each one must be read, and the last expression must be a String (or `result(:Name, ...)` when
       the tool declares an `output:`). Before it, only
-      `name = expression` locals and guard clauses (`return "x" if cond`, `raise "msg" unless cond`) are
-      allowed. `return` ends the whole tool call with that string, even from inside a list block. Syntax available: `if`/`elsif`/`else` and `unless` (as a
+      `name = expression` locals, guard clauses (`return "x" if cond`, `raise "msg" unless cond`) and
+      `progress(...)`, `hide_tool(...)` and `show_tool(...)` statements and `.each { ... }` loops are allowed. `return` ends the whole tool call with that string, even from inside a list block. Syntax available: `if`/`elsif`/`else` and `unless` (as a
       value they need an `else`), `case x when "a", /re/ then ... else ... end` (strings, integers and
       regexes), the ternary `c ? a : b`, `&&`, `||`, `!`, parentheses, string interpolation, and `rust(:name, args)` to call a declared function (`rust_fn`, `cmd_fn`,
       `script_fn`). Bindings are called as `Module.method(args)` after `use_bindings :name`.
@@ -191,11 +204,14 @@ module RmcpDsl
       Integers: `:i32` and `:i64` arithmetic is overflow-checked, and `/` and `%` round down like Ruby.
       `Rust::Int32(x)` and `Rust::Int64(x)` opt into Rust's truncating semantics for one operation.
 
-      Values that may be nil: `xs[i]`, `xs.first`, `xs.last` and `s.index(x)` return nil in Ruby for a missing
-      item, so a body may only use them through `|| default` (the default runs only when the value is nil,
-      and `|| raise("message")` is allowed), `.nil?` or `.to_s`. Anything else is refused, and so is
-      putting one inside a string interpolation without a default. A field declared `optional: true` is
-      nil-able the same way (`limit || 10`).
+      Values that may be nil: `xs[i]`, `xs.first`, `xs.last`, `s.index(x)` and `s =~ /re/` return nil in Ruby
+      when nothing matches, so a body may only use them through `|| default` (the default runs only when the
+      value is nil, and `|| raise("message")` is allowed), `.nil?` or `.to_s`. Anything else is refused, and
+      so is putting one inside a string interpolation without a default. A field declared `optional: true`
+      is nil-able the same way (`limit || 10`); an optional nested object is read with `&.` (`address&.city`,
+      nil when the object is absent), and `first`, `last`, `[]` and `find` on a list of objects give a nil-able
+      element, read the same way. The `=~` operator takes a regex literal and gives the
+      character index of the first match (not a boolean): `(text =~ /\d/) || -1`.
 
       `s.to_i` reads the leading integer like Ruby does (spaces, a sign, digits with single underscores
       between them, stopping at anything else, no digits is 0) but returns an i64: a value that does not
@@ -210,27 +226,104 @@ module RmcpDsl
       replacement (`text.gsub(/\d+/) { |m| "[#{m}]" }`). Unlike list blocks, they cannot contain
       `raise`, `to_i` or integer arithmetic yet (they compile to Rust closures).
 
-      List blocks (`map`, `select`, `reject`, `find`, `any?`, `all?`, `count`) take one plain parameter. `map`
-      returns strings or integers and the others must end in true or false. They may use integer
+      List blocks (`map`, `each`, `select`, `reject`, `find`, `any?`, `all?`, `count`) take one plain parameter; on
+      a `list(:Address)` the parameter is an object (`o.city`). `map`
+      returns strings, integers or floats and the others must end in true or false. They may use integer
       arithmetic, `to_i` and `raise`. `n.times`, ranges and `upto`/`downto` make lists of integers, so
       `n.times.map { |i| i * i }.join(",")` works.
+      Maps take blocks too: `m.map { |k, v| ... }` gives a list of strings or integers (the result of the
+      block), while `m.select { |k, v| ... }` and `m.reject { |k, v| ... }` give a new map with the same key
+      and value types. A map block takes exactly `|k, v|` (`k` the String key, `v` the value), both must be
+      read, and a map is read-only: in-place changes are not supported.
+      `each` runs a block for its effects on a list (`xs.each { |x| ... }`) or a map (`m.each { |k, v| ... }`):
+      the block's value is ignored, so it may `raise`, `return`, call `progress` or call a helper, and the list
+      or map itself is the value (Ruby's `each` returns its receiver).
 
       Helpers: `helper :name, args: [:string, :i64], returns: :string do |text, n| ... end` declares a function
       that tool bodies and later helpers call by name: `name(text, 3)`. Argument and result types are always
-      written out: `:string`, `:i32`, `:i64`, `:f64`, `:bool`, `:string_list`, `:i64_list`, and for results
-      the nil-able forms `:string?`, `:i64?`, `:string_list?` and so on. A helper may only call helpers
-      declared above it, so there is no recursion. It may use `return`, `raise` and checked arithmetic; a
-      failure becomes an error result in the caller. A helper must be called somewhere. Sorbet cannot know
-      names declared in the DSL, so run `rmcp_dsl rbi FILE...` to write their signatures to
-      `sorbet/rbi/rmcp_dsl/dsl_helpers.rbi` and keep the file `# typed: true`; the compiler checks every call
-      regardless.
+      written out: `:string`, `:i32`, `:i64`, `:f64`, `:bool`, `:string_list`, `:i64_list`, `:f64_list`, and a trailing ?
+      makes a parameter or result nil-able (`:string?`, `:i64?`, `:string_list?`, ...). A helper may also take
+      keyword parameters: `kw: { sep: [:string, false] }` with `do |text, sep: "-"| ... end`, called as
+      `name(text, sep: ",")`; a nil-able declared type or a `nil` default makes the parameter nil-able in the
+      body. A helper may only call helpers declared above it, so there is no recursion. It may use `return`,
+      `raise` and checked arithmetic; a failure becomes an error result in the caller. A helper must be called
+      somewhere. Sorbet cannot know names declared in the DSL, so run `rmcp_dsl rbi FILE...` to write their
+      signatures to `sorbet/rbi/rmcp_dsl/dsl_helpers.rbi` and keep the file `# typed: true`; the compiler
+      checks every call regardless.
+
+      Async: a `rust_fn` (or a binding function) declared with `async: true` is an `async fn`, and a body
+      that calls any async function is compiled `async fn` too (`async: true` is inferred, so callers need
+      not say it). A declaration's `returns:` is the eventual value, not a future, and a call site is
+      awaited, with `?` when the callee can fail. An async call is allowed in a tool body, a helper, a
+      prompt body or a resource body; a `gsub`/`sub` block and a Ruby-compiled binding have no async
+      context, so an async call there is refused. An async recursive helper cycle is refused (it would
+      need `Box::pin`), and `async: true` on `cmd_fn`/`script_fn` is refused because a subprocess blocks.
 
       Errors: `raise "message"` (or `raise some_string`) ends the call with an MCP error result,
       `isError: true`, carrying the message. It has no value, so use it where any type fits, for
       example `cond ? raise("bad") : value` or in one branch of an `if`. A body cannot end in a bare
       `raise` or `return`. Integer overflow and division by zero also
       return error results.
+
+      The request context: a tool body may read the MCP call it is answering with `client_name` and
+      `client_version` (the calling client, nil-able), `protocol_version` (nil-able), `request_id` (a String),
+      `progress_token` (nil-able) and `cancelled?` (a bool). They take no arguments and are available only in a
+      tool body; the nil-able ones follow the usual `|| default`, `.nil?` and `.to_s` rules. A tool body may
+      also send progress with `progress(value)` or `progress(value, total: n, message: "s")` on a line of its
+      own: it is a statement, not a value, so it cannot be assigned or returned, and it sends
+      `notifications/progress` only when the client supplied a progress token. Such a tool is compiled async.
+
+      Cancellation is cooperative: on `notifications/cancelled` the request's token is cancelled, but the
+      body keeps running until it checks `cancelled?`. A loop that awaits inside, such as one sending
+      `progress(...)` each iteration, can stop itself with `raise "cancelled" if cancelled?`; blocking work
+      (a `cmd_fn` or `script_fn` call, or a binding that blocks) is not interrupted.      `notifications/progress` only when the client supplied a progress token. Such a tool is compiled async.
+
+      A tool body may also ask the client for input with `elicit(message, schema: { ... })`: `message` is a
+
+
+
+
+
+
+
+
+
+
+      string expression and `schema:` is a JSON object literal whose properties are primitive (string, number,
+      integer, boolean or enum). The call is a server-to-client request, so the tool is compiled async and can
+      fail. Its value has two fields: `answer.action` is `"accept"`, `"decline"` or `"cancel"`, and
+      `answer.content` is the JSON value the client sent back, nil when it sent none (use `|| default`, `.nil?`
+      or `.to_s`).
+
+      A tool body may also send a log message with `log(:info, "text")` on a line of its own, but only when
+      the server declares `feature :logging` (the level is one of :debug, :info, :notice, :warning, :error,
+      :critical, :alert, :emergency; the message is a string expression). It is a statement, not a value,
+      sends `notifications/message`, and makes the tool compiled async. Logging is deprecated by SEP-2577 in
+      rmcp: the declaration is what advertises the capability and answers `logging/setLevel`, and the emitted
+      call is scoped with `#[allow(deprecated)]` so the generated crate stays warning-free.
+
+      A tool body may also read the client roots with `roots()`, but only when the server declares
+      `feature :roots` (roots is deprecated by SEP-2577 in rmcp, so the emitted `roots/list` call is scoped
+      with `#[allow(deprecated)]`). `roots()` is a server-to-client request: the tool is compiled async and
+      can fail, and a client that did not declare the capability makes the call an error result. Its value is
+      a list of roots; `roots().map { |root| ... }` builds a list of strings or integers, `roots().each do
+      |root| ... end` runs the block for its effects, and `roots().length` / `roots().empty?` read the list.
+      Inside the block, `root.uri` is a String and `root.name` is nil-able (use `|| default`, `.nil?` or
+      `.to_s`).
+
+      A tool body may also ask the client's LLM for a completion with
+      `sample(prompt, max_tokens: n, system: "s", temperature: 0.5, stop: ["STOP"])`, but only when the
+      server declares `feature :sampling`. `prompt` is a string and `max_tokens:` (an integer) is required;
+      `system:`, `temperature:` and `stop:` (a list of strings) are optional and map to the rmcp builders.
+      It is a value, not a statement: the call is a server-to-client request, so the tool is compiled async
+      and can fail, and a client that did not declare the sampling capability makes the call an error result.
+      Its value has `text` (the assistant's text, nil-able when the reply carried no text), `model`, `role`
+      and nil-able `stop_reason`. Sampling is deprecated by SEP-2577 in rmcp, so the emitted
+      `sampling/createMessage` call is scoped with `#[allow(deprecated)]`. The message history and non-text
+      content are not exposed yet.
+
     MD
+
 
     NOTIFY_TEXT = <<~'MD'
       Notifications never change the generated code or fail a build; the environment only decides what
@@ -247,13 +340,16 @@ module RmcpDsl
         with an integer-literal limit), `partition`, `chars`, `lines`, `n.times`, `a.upto(b)`,
         `a.downto(b)`, ranges `(a..b)` and `(a...b)`, array literals, and `map`, `join`, `length`, `size`,
         `first`, `last`, `[]`, `empty?`, `include?`, `select`, `reject`, `find`, `any?`, `all?`, `count`,
-        `sort`, `uniq`, `reverse`, `to_a`; on integer lists also `sum`, `min` and `max`. Not supported:
-        hash literals, `each`, lists of floats, and `split` with a regex or a variable limit.
-      - `=~` (use `match?`), `gsub`/`sub` with a block whose pattern is a string or that reads capture
+        `sort`, `uniq`, `reverse`, `to_a`; on integer and float lists also `sum`, `min` and `max`. Not supported:
+        in-place map changes, and `split` with a regex or a variable limit. A `list(:Address)` (a list of nested
+        objects) supports `length`, `size`, `empty?`, `first`, `last`, `[]`, `each`, `map`, `select`, `reject`,
+        `find`, `any?`, `all?`, `count` and `reverse`; `sort`, `uniq`, `include?`, `join`, `sum`, `min` and `max`
+        are refused, because an object has no ordering, equality or string form.
+      - `gsub`/`sub` with a block whose pattern is a string or that reads capture
         groups (`$1`, `$~`), string ranges (`s[1..2]`; write `s[1, 2]`),
         `Integer(text)` without the base, and `tr` or `delete` with ranges (`a-z`) or `^`.
-      - `each`, loops, and `def` inside a body.
-      - Regex literals are only accepted by `gsub`, `sub`, `match?` and `when`.
+      - `while`/`for` loops and `def` inside a body.
+      - Regex literals are only accepted by `gsub`, `sub`, `match?`, `=~` and `when`.
 
       Predicates and extraction are often expressible anyway: `s.sub(/\Ahttp/, "") != s` tests a prefix,
       and two `sub` calls with lazy, dot-all patterns (`/\A.*?<title[^>]*>/mi`) cut text out between tags.
@@ -266,6 +362,7 @@ module RmcpDsl
       rmcp_dsl check FILE.rb [--format json]
       rmcp_dsl build FILE.rb [-o DIR] [--release] [--emit-only]
       rmcp_dsl run   FILE.rb [-o DIR] [--release]
+      rmcp_dsl init  NAME [-o DIR] [--force] [--no-bindings]
       rmcp_dsl check FILE.rb --format json --types
       rmcp_dsl rbi   FILE.rb... [-o DIR]
       rmcp_dsl lsp
@@ -287,6 +384,9 @@ module RmcpDsl
         stops after writing and `--release` is passed to cargo. The crate is a standalone cargo workspace.
         Rust errors in generated code are printed as `FILE:LINE: error: ... (in tool `name`)`.
       - `run` builds, then starts the server on stdio. Nothing else may write to stdout while it runs.
+      - `init` writes `NAME.rmcp.rb` (a minimal server) and a `bindings/` folder (with a
+        `.gitkeep`) into `-o DIR` (default `.`). It refuses to overwrite an existing file
+        without `--force`, and `--no-bindings` skips the folder.
       - `skill` writes this skill into `-o DIR` (default the current directory) as `rmcp-dsl/`.
       - `--warn SPEC` and `--notice SPEC` choose which notifications are printed (`all`, `none`, codes).
       - `--dump-ir` prints the intermediate representation as JSON.
@@ -362,10 +462,10 @@ module RmcpDsl
     MD
 
     TYPE_NAMES = { string: "String", f64: "Float", i32: "I32", i64: "I64", bool: "T::Boolean",
-                   strs: "T::Array[String]", i64s: "T::Array[I64]", ostr: "T.nilable(String)",
+                   strs: "T::Array[String]", i64s: "T::Array[I64]", f64s: "T::Array[Float]", ostr: "T.nilable(String)",
                    oi32: "T.nilable(I32)", oi64: "T.nilable(I64)", of64: "T.nilable(Float)",
                    obool: "T.nilable(T::Boolean)", ostrs: "T.nilable(T::Array[String])",
-                   oi64s: "T.nilable(T::Array[I64])" }.freeze
+                   oi64s: "T.nilable(T::Array[I64])", of64s: "T.nilable(T::Array[Float])" }.freeze
 
     # A binding the page shows: it is parsed by the real loader in the tests, so the page cannot drift from the format.
     BINDING_EXAMPLE = <<~'RB'
@@ -410,6 +510,7 @@ module RmcpDsl
       when :str then "string literal"
       when :bool then "true or false"
       when :lit then "a string, number or true/false literal"
+      when :schema then "a JSON Schema object literal with string keys (`{ \"type\" => \"object\", \"properties\" => { ... } }`)"
       when :json then "a JSON object literal with string keys (`{ \"example.com/tier\" => \"free\" }`)"
       when :fieldtype then "a type symbol (#{(TYPES.keys + FIELD_LISTS).map(&:inspect).join(", ")}, or the CamelCase name of another params to nest an object)"
       when :num then "number literal"

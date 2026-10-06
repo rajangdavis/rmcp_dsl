@@ -38,7 +38,7 @@ class TestRbi < Minitest::Test
   end
 
   def test_webkit_helpers
-    text = RmcpDsl::Rbi.generate([File.expand_path("../examples/webkit.rb", __dir__)])
+    text = RmcpDsl::Rbi.generate([File.expand_path("../examples/webkit.rmcp.rb", __dir__)])
     assert_match(/\A# typed: strict\n/, text)
     %w[ServerScope ToolScope PromptScope ResourceScope].each { |s| assert_includes text, "class #{s}\n" }
     assert_equal 4, text.scan("  sig { params(url: String).returns(T::Array[String]) }\n  def checked_addresses(url); end\n").size
@@ -58,6 +58,19 @@ class TestRbi < Minitest::Test
     end
   end
 
+  def test_nilable_argument_and_keyword_parameter
+    src = dsl(<<~'H', 'endpoint(text, text.index("/"), sep: ",")')
+      helper :endpoint, args: [:string, :i64?], returns: :string, kw: { sep: [:string, false] } do |host, port, sep: "http"|
+        "#{sep}:#{host}:#{port || 0}"
+      end
+    H
+    write_all([src]) do |paths|
+      text = RmcpDsl::Rbi.generate(paths)
+      assert_includes text, "  sig { params(host: String, port: T.nilable(Integer), sep: String).returns(String) }\n" \
+                            "  def endpoint(host, port, sep: \"http\"); end\n"
+    end
+  end
+
   def test_type_mapping
     r = RmcpDsl::Rbi
     assert_equal "Integer", r.ruby_type("i32")
@@ -65,6 +78,8 @@ class TestRbi < Minitest::Test
     assert_equal "Float", r.ruby_type("f64")
     assert_equal "T::Boolean", r.ruby_type("bool")
     assert_equal "T::Array[Integer]", r.ruby_type("i64s")
+    assert_equal "T::Array[Float]", r.ruby_type("f64s")
+    assert_equal "T.nilable(T::Array[Float])", r.ruby_type("of64s")
     assert_equal "T.nilable(Integer)", r.ruby_type("oi64")
     assert_equal "T.nilable(T::Boolean)", r.ruby_type("obool")
     assert_equal "T.nilable(T::Array[String])", r.ruby_type("ostrs")

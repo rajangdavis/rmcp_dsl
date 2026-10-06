@@ -16,7 +16,8 @@ module RmcpDsl
       # Value types, written as the compiler's internal symbols; [:opt, T] is nil-able, [:obj, "Name"] an object.
       INTS = %i[i32 i64 int].freeze
       DISPLAY = { string: "String", i32: "Integer (i32)", i64: "Integer (i64)", int: "Integer", f64: "Float",
-                  bool: "T::Boolean", strs: "T::Array[String]", i64s: "T::Array[Integer (i64)]", untyped: "T.untyped" }.freeze
+                  bool: "T::Boolean", strs: "T::Array[String]", i64s: "T::Array[Integer (i64)]", f64s: "T::Array[Float]", untyped: "T.untyped",
+                  ostr: "T.nilable(String)" }.freeze
       PARSE = DISPLAY.invert.merge("String" => :string).freeze
 
       STRING_METHODS = {
@@ -34,9 +35,9 @@ module RmcpDsl
                    "any?" => :bool, "all?" => :bool, "first" => [:opt, :elem], "last" => [:opt, :elem],
                    "find" => [:opt, :elem], "min" => [:opt, :elem], "max" => [:opt, :elem], "[]" => [:opt, :elem],
                    "sum" => :elem, "join" => :string, "map" => :unknown, "sort" => :self, "uniq" => :self,
-                   "reverse" => :self, "to_a" => :self, "select" => :self, "reject" => :self,
+                   "reverse" => :self, "to_a" => :self, "each" => :self, "select" => :self, "reject" => :self,
                    "tally" => [:map, :i64] }.freeze
-      LIST_BLOCKS = %w[map select reject find any? all? count].freeze
+      LIST_BLOCKS = %w[map each select reject find any? all? count].freeze
       KEYWORDS = %w[if unless else elsif end case when raise return true false nil].freeze
 
       DOCS = {
@@ -45,7 +46,9 @@ module RmcpDsl
         "tool" => "A tool the server offers", "helper" => "A typed function that bodies can call",
         "prompt" => "A prompt the server offers", "resource" => "A resource the server offers",
         "body" => "The Ruby-subset body that computes the result", "message" => "One message of a prompt conversation",
-        "transport" => "How the server talks: :stdio or :http"
+        "complete" => "A block that offers completion values for a prompt or resource template argument",
+        "transport" => "How the server talks: :stdio or :http",
+        "feature" => "A backend feature the server declares it uses"
       }.freeze
 
       module_function
@@ -65,10 +68,12 @@ module RmcpDsl
           return inner == :unknown ? :unknown : [:opt, inner]
         end
         if (m = s.match(/\AT::Hash\[String, (.*)\]\z/m))
-          value = PARSE[m[1]]
+          value = type_of_display(m[1])
           return map_value?(value) ? [:map, value] : :unknown
         end
-        s.match?(/\A[A-Z]\w*\z/) && s != "Regexp" ? [:obj, s] : :unknown
+        return [:obj, s] if s.match?(/\A[A-Z]\w*\z/) && s != "Regexp"
+
+        :unknown
       end
 
       def display(type)
@@ -84,13 +89,13 @@ module RmcpDsl
         end
       end
 
-      def element(list) = list == :strs ? :string : :i64
+      def element(list) = { strs: :string, f64s: :f64 }.fetch(list, :i64)
 
       # The methods of one type; objects have fields, not methods (see Query#field_items).
       def methods_for(type)
         case type
         when :string then table(STRING_METHODS)
-        when :strs, :i64s then list_methods(type)
+        when :strs, :i64s, :f64s then list_methods(type)
         when :i32, :i64, :int then table(INT_METHODS)
         when :f64, :bool then table("to_s" => [:string, "0"])
         when Array then array_methods(type)
@@ -100,11 +105,19 @@ module RmcpDsl
 
       # The value types a map can hold, as completion names them (the compiler's CompositeTypes::VALUES), and T.untyped
       # for the empty literal.
-      def map_value?(value) = value == :untyped || CompositeTypes::VALUES.values.any? { |sym, _| sym == value }
+      def map_value?(value)
+        value == :untyped || CompositeTypes::VALUES.values.any? { |sym, _| sym == value } ||
+          (value.is_a?(Array) && %i[obj map].include?(value[0]))
+      end
 
       def array_methods(type)
         case type[0]
-        when :opt then type[1].is_a?(Array) && type[1][0] == :map ? table("nil?" => [:bool, "0"]) : table("nil?" => [:bool, "0"], "to_s" => [:string, "0"])
+        when :opt
+          if type[1].is_a?(Array) && %i[map obj].include?(type[1][0])
+            table("nil?" => [:bool, "0"])
+          else
+            table("nil?" => [:bool, "0"], "to_s" => [:string, "0"])
+          end
         when :map then map_methods(type[1])
         else []
         end
@@ -112,7 +125,7 @@ module RmcpDsl
 
       # The methods of a map with value type `value`, from Body::MAP_ARITY so the list cannot drift from the compiler.
       def map_methods(value)
-        rets = { :[] => [:opt, value], :fetch => value, :keys => :strs, :size => :i64, :length => :i64, :merge => :self,
+        rets = { :[] => [:opt, value], :fetch => value, :keys => :strs, :size => :i64, :length => :i64, :merge => :self, :each => :self,
                  :values => { string: :strs, i64: :i64s }.fetch(value, :unknown) }
         Body::MAP_ARITY.map do |name, arity|
           ret = rets.fetch(name) { name.to_s.end_with?("?") ? :bool : :unknown }
@@ -128,7 +141,7 @@ module RmcpDsl
       def list_methods(type)
         LIST_RET.filter_map do |name, ret|
           next if Body::INT_LIST_METHODS.map(&:to_s).include?(name) && type == :strs
-          next if name == "tally" && type == :i64s
+          next if name == "tally" && type != :strs
 
           arity = Body::LIST_ARITY[name.to_sym]
           Meth.new(name: name, ret: ret, arity: arity.to_s, block: LIST_BLOCKS.include?(name))
@@ -142,7 +155,7 @@ module RmcpDsl
       end
 
       def resolve(ret, recv)
-        elem = %i[strs i64s].include?(recv) ? element(recv) : :unknown
+        elem = %i[strs i64s f64s].include?(recv) ? element(recv) : :unknown
         case ret
         when :self then recv
         when :elem then elem
@@ -153,10 +166,10 @@ module RmcpDsl
 
       # One completion request: everything is decided from the text above the cursor and the line before it.
       class Query
-        BODY_KINDS = %i[body message helper].freeze
+        BODY_KINDS = %i[body message complete helper].freeze
         OWNERS = %i[tool prompt resource].freeze
-        HEADS = %w[server params output tool helper prompt resource body message].freeze
-        BODY_HEAD = /\A\s*(body|message\b[^|]*|helper\b[^|]*)\s+do\s*\|([^|]*)\z/
+        HEADS = %w[server params output tool helper prompt resource body message complete].freeze
+        BODY_HEAD = /\A\s*(body|message\b[^|]*|complete\b[^|]*|helper\b[^|]*)\s+do\s*\|([^|]*)\z/
         FIELD_DECL = /\A\s*field\s+:(\w+)\s*,\s*(:\w+|(?:map|list)\((?:[^()]|\((?:[^()])*\))*\))(.*)\z/
         LEADING_OPENERS = /\A\s*(?:if|unless|while|until|case|begin|def|class|module)\b/
 
@@ -241,7 +254,7 @@ module RmcpDsl
           return @body_entry if defined?(@body_entry)
 
           @body_entry = @stack.reverse.find { |e| BODY_KINDS.include?(e[:kind]) } ||
-                        (@prefix.match?(/\A\s*(?:body|message\b[^|]*|helper\b[^|]*)\s+do\s*\|[^|]*\|/) ? { kind: :inline, line: @above.size, text: @prefix, params: nil } : nil)
+                        (@prefix.match?(/\A\s*(?:body|message\b[^|]*|complete\b[^|]*|helper\b[^|]*)\s+do\s*\|[^|]*\|/) ? { kind: :inline, line: @above.size, text: @prefix, params: nil } : nil)
         end
 
         def owner_entry = @stack.reverse.find { |e| OWNERS.include?(e[:kind]) }
@@ -289,11 +302,17 @@ module RmcpDsl
           base = case f[:type]
                  when "string_list" then :strs
                  when "i64_list" then :i64s
+                 when "f64_list" then :f64s
+                 when CompositeTypes::OBJECT_LIST_FIELD then [:obj, CompositeTypes.object_list_name(f[:type])]
+                 when CompositeTypes::MAP_OF_MAP_FIELD
+                   [:map, [:map, CompositeTypes::VALUES.fetch(CompositeTypes.map_of_map_name(f[:type]), [:untyped])[0]]]
+                 when CompositeTypes::OBJECT_MAP_FIELD then [:map, [:obj, CompositeTypes.object_map_name(f[:type])]]
                  when CompositeTypes::MAP_FIELD then [:map, CompositeTypes::VALUES.fetch($1, [:untyped])[0]]
                  when /\A[A-Z]/ then [:obj, f[:type]]
                  else f[:type].to_sym
                  end
-          f[:optional] && (base.is_a?(Symbol) || map?(base)) ? [:opt, base] : base
+          opt = base.is_a?(Symbol) || map?(base) || (base.is_a?(Array) && base[0] == :obj)
+          f[:optional] && opt ? [:opt, base] : base
         end
 
         def helper_type(name)
@@ -302,6 +321,7 @@ module RmcpDsl
           case name
           when "string_list" then :strs
           when "i64_list" then :i64s
+          when "f64_list" then :f64s
           else name.to_sym
           end
         end
@@ -368,7 +388,7 @@ module RmcpDsl
           type = :unknown
           if (m = before.match(/\A(.*)\.(\w+[?!]?)\s*\z/m)) && (start = receiver_start(m[1]))
             recv = eval_text(m[1][start..])
-            if %i[strs i64s].include?(recv) && LIST_BLOCKS.include?(m[2])
+            if %i[strs i64s f64s].include?(recv) && LIST_BLOCKS.include?(m[2])
               type = Completion.element(recv)
             elsif INTS.include?(recv) && %w[times upto downto].include?(m[2])
               type = :i64
@@ -385,6 +405,11 @@ module RmcpDsl
           type = start ? receiver_type(pre, start) : :unknown
           return all_method_items if type == :unknown
 
+          if type.is_a?(Array) && type[0] == :opt && type[1].is_a?(Array) && type[1][0] == :obj
+            return field_items(type[1][1]) if match[1] == "&."
+
+            return Completion.methods_for(type).map { |m| method_item(m, type) }
+          end
           if type.is_a?(Array) && type[0] == :obj
             field_items(type[1])
           else
@@ -420,7 +445,7 @@ module RmcpDsl
 
         def all_method_items
           by_name = {}
-          [:string, :strs, :i64s, :i64, :f64, :bool, [:opt, :string]].each do |type|
+          [:string, :strs, :i64s, :f64s, :i64, :f64, :bool, [:opt, :string]].each do |type|
             Completion.methods_for(type).each { |m| (by_name[m.name] ||= []) << [type, m] unless m.name == "[]" }
           end
           by_name.map do |name, entries|
@@ -575,6 +600,7 @@ module RmcpDsl
         def array_literal(inner)
           return :strs if inner.match?(/\A\s*(?:"[^"]*"\s*,?\s*)+\z/)
           return :i64s if inner.match?(/\A\s*(?:\d+\s*,?\s*)+\z/)
+          return :f64s if inner.match?(/\A\s*(?:-?(?:\d+\.\d*|\.\d+)\s*,?\s*)+\z/)
 
           :unknown
         end
@@ -609,6 +635,12 @@ module RmcpDsl
 
         # --- body: names in scope -------------------------------------------------------------------------
 
+        # Feature names a `feature :name` declaration names anywhere in the file; completion reads the
+        # whole document, so a declaration below the cursor still counts.
+        def declared_features
+          @a.text.scan(/^\s*feature\s+:(\w+)/).flatten
+        end
+
         def body_items
           m = @prefix.match(/(?<![\w.:@$])(\w*)\z/) or return []
           return [] if m[1].match?(/\A\d/)
@@ -617,6 +649,31 @@ module RmcpDsl
           list += @helpers.map do |n, h|
             item(n, :function, "helper → #{Completion.display(h[:ret])}", insert: "#{n}($1)", snippet: true, sort: "1")
           end
+          # the request-context built-ins, only where the compiler allows them: a tool body
+          if owner_entry && owner_entry[:kind] == :tool
+            list += Body::CONTEXT_BUILTINS.map do |n, (_, t)|
+              item(n.to_s, :function, "request context → #{Completion.display(t)}", sort: "1")
+            end
+            # `progress` is a statement, so offer it with a placeholder value rather than as a bare name
+            list += [item("progress", :function, "send an MCP progress notification", insert: "progress($1)", snippet: true, sort: "1")]
+            # `elicit` is a value, so offer the call with its message and schema placeholders
+            list += [item("elicit", :function, "ask the client for input (elicitation)", insert: "elicit($1, schema: {$2})", snippet: true, sort: "1")]
+            # hide_tool(:name) / show_tool(:name) are statements that change the advertised tool list at run time
+            list += [item("hide_tool", :function, "hide a tool from tools/list until show_tool runs", insert: "hide_tool(:$1)", snippet: true, sort: "1")]
+            list += [item("show_tool", :function, "show a hidden tool in tools/list again", insert: "show_tool(:$1)", snippet: true, sort: "1")]
+            # `log` is a statement gated by `feature :logging`, so offer it only when the file declares it
+            if declared_features.include?("logging")
+              list += [item("log", :function, "send an MCP logging notification (deprecated)", insert: "log(:info, $1)", snippet: true, sort: "1")]
+            end
+            # `roots` is a value gated by `feature :roots`, so offer it only when the file declares it
+            if declared_features.include?("roots")
+              list += [item("roots", :function, "ask the client for its roots (deprecated)", insert: "roots()", snippet: true, sort: "1")]
+            end
+            # `sample` is a value gated by `feature :sampling`, so offer it only when the file declares it
+            if declared_features.include?("sampling")
+              list += [item("sample", :function, "ask the client's LLM for a completion (deprecated)", insert: "sample($1, max_tokens: $2)", snippet: true, sort: "1")]
+            end
+          end
           list += KEYWORDS.map { |k| item(k, :keyword, "keyword", sort: "2") }
           filter(list, m[1])
         end
@@ -624,7 +681,7 @@ module RmcpDsl
         # `body do |` and `|a, `: the field names of the enclosing declaration's params, minus those listed.
         def pipe_items
           m = @prefix.match(BODY_HEAD) or return []
-          return [] if m[1].start_with?("helper")
+          return [] if m[1].start_with?("helper", "complete")
 
           parts = m[2].split(",", -1)
           typed = parts.pop.to_s.strip
@@ -722,6 +779,8 @@ module RmcpDsl
         end
 
         def snippet_for(name, sig)
+          return "complete do |arg, typed|\n  $0\nend" if name.to_s == "complete"
+
           n = 0
           pos = sig[:pos].each_with_index.map { |kind, i| placeholder(kind, n += 1, sig[:names][i]) }
           kws = sig[:kw].select { |_, (_, req)| req }.map { |k, (kind, _)| "#{k}: #{placeholder(kind, n += 1, k)}" }
@@ -752,7 +811,7 @@ module RmcpDsl
 
         KIND_TEXT = { str: "string", bool: "true or false", camel: "a params/output name", uint: "integer", num: "number",
                       strs: "list of strings", htypes: "list of types", types: "list of types", lit: "literal",
-                      snake: "snake_case name", fieldtype: "field type" }.freeze
+                      snake: "snake_case name", fieldtype: "field type", helper_kw: "keyword parameters" }.freeze
 
         def kw_items(call, sig, given_text, cur)
           typed = cur[/\A\s*(\w*)\z/, 1] or return []
@@ -775,18 +834,18 @@ module RmcpDsl
             source = kwname == "output" ? @decls["output"] : @decls["params"]
             symbol_items(source.keys, typed) { kwname == "output" ? "output struct" : "params struct" }
           when :bool then filter(%w[true false].map { |b| item(b, :keyword, "boolean") }, typed.strip)
-          when :htypes then type_list_items(HELPER_TYPES.keys.map(&:to_s).reject { |t| t.end_with?("?") }, typed)
+          when :htypes then type_list_items(HELPER_TYPES.keys.map(&:to_s), typed)
           when :types then type_list_items(TYPES.keys.map(&:to_s), typed)
           else []
           end
         end
 
         COLLECTIONS = {
-          "map(" => "A map from String keys to values of one type, such as map(:i64) or map(list(:string)).",
+          "map(" => "A map from String keys to values of one type, such as map(:i64), map(:Address) or map(map(:i64)).",
           "list(" => "A list of one type, such as list(:string); the same as :string_list or :i64_list."
         }.freeze
         MAP_VALUE_TYPES = %w[string i64 f64 bool].freeze
-        LIST_ELEMENT_TYPES = %w[string i64].freeze
+        LIST_ELEMENT_TYPES = %w[string i64 f64].freeze
 
         # The type position of `field :name, `: the type symbols and nested params, and `map(` and `list(`; inside
         # `map(` the value types and `list(`, inside `list(` the element types.
@@ -794,9 +853,16 @@ module RmcpDsl
           if (m = typed.match(/\A\s*map\(\s*(.*)\z/m))
             inner = m[1]
             return collection_inner(inner.match(/\Alist\(\s*(.*)\z/m)[1], LIST_ELEMENT_TYPES, "list element") if inner.match?(/\Alist\(/)
+            if (nm = inner.match(/\Amap\(\s*(.*)\z/m))
+              return symbol_items(MAP_VALUE_TYPES, nm[1]) { |n| TYPES[n.to_sym] || n }
+            end
 
-            list = symbol_items(MAP_VALUE_TYPES, inner) { |n| TYPES[n.to_sym] || n }
-            return list + (inner.match?(/\A:/) ? [] : filter([collection_item("list(")], inner[/\A\w*/]))
+            own = @stack.last && @stack.last[:text][/\A\s*(?:params|output)\s+:(\w+)/, 1]
+            camel = @decls["params"].keys - [own]
+            values = symbol_items(MAP_VALUE_TYPES, inner) { |n| TYPES[n.to_sym] || n }
+            objects = symbol_items(camel, inner) { |n| "params object (#{n})" }
+            rest = inner.match?(/\A:/) ? [] : filter([collection_item("list("), collection_item("map(")], inner[/\A\w*/])
+            return values + objects + rest
           end
           if (m = typed.match(/\A\s*list\(\s*(.*)\z/m))
             return collection_inner(m[1], LIST_ELEMENT_TYPES, "list element")

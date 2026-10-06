@@ -94,6 +94,28 @@ class TestErrorsAndFields < Minitest::Test
     assert_includes rs, "(\"(\")", "a parenthesis inside a string literal is left alone"
   end
 
+  # A negative literal default keeps protective parentheses (so `a - -1` parses); `unwrap_or` takes one
+  # expression, so they are redundant there and rustc warns (unused_parens).
+  def test_a_negative_default_gets_no_redundant_parentheses
+    rs = main_rs(<<~'RB')
+      server "neg", version: "0.1.0" do
+        params :P do
+          field :text, :string
+        end
+
+        tool :t, params: :P, description: "d" do
+          body do |text|
+            (text.index("z") || -1).to_s
+          end
+        end
+
+        transport :stdio
+      end
+    RB
+    assert_includes rs, "unwrap_or(-1)"
+    refute_includes rs, "unwrap_or((-1))"
+  end
+
   def test_a_server_that_cannot_fail_is_unchanged
     rs = main_rs(PLAIN)
     refute_includes rs, "CallToolResult"

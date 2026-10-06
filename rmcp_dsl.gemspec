@@ -16,11 +16,12 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 4.0"
   spec.license = "AGPL-3.0-only"
   spec.metadata["rubygems_mfa_required"] = "true"
+  spec.metadata["rmcp_version"] = RmcpDsl::RMCP_VERSION # the rmcp the servers it generates are built against
   # Add spec.homepage and spec.metadata["source_code_uri"] once the GitHub repository exists.
 
   # Bindings are not shipped: they belong to the project that uses them (a bindings/ folder next to the DSL
   # file; examples/bindings/ shows the format). The skill generator reads spec/shims/.
-  spec.files = Dir["{exe,lib}/**/*", "spec/shims/*.yml", "README.md", "LICENSE*"].select { |f| File.file?(f) }
+  spec.files = Dir["{exe,lib}/**/*", "spec/shims/*.yml", "docs/**/*.md", "README.md", "LICENSE*"].select { |f| File.file?(f) }
   spec.bindir = "exe"
   spec.executables = ["rmcp_dsl"]
   spec.require_paths = ["lib"]

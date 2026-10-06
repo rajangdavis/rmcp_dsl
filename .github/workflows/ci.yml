@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Ruby structure (rbi, Sorbet, DSL check, probes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.7"
+          bundler-cache: true
+      - run: make rbi-check typecheck
+      - run: make dsl-check
+      - run: make probe
+
+  unit:
+    name: Ruby unit + refusals
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.7"
+          bundler-cache: true
+      - run: make test-ruby
+
+  rust:
+    name: Generated Rust (shim diff + feature drivers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.7"
+          bundler-cache: true
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+      - run: make test-diff
+      - run: make test-ruby-rust
+
+  e2e:
+    name: End-to-end MCP servers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.7"
+          bundler-cache: true
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+      - name: every example server, end to end
+        run: make e2e-listkit e2e-notekit e2e-logkit e2e-webkit e2e-guide e2e-formkit e2e-statkit e2e-httpkit e2e-httpauth e2e-httpoauth e2e-lsp e2e-mapkit e2e-jsonkit e2e-taskkit e2e-contentkit e2e-pathkit e2e-livekit e2e-pagekit e2e-configkit e2e-schemakit e2e-apikit e2e-shopkit
+
+  gem:
+    name: Build and smoke-test the gem
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.7"
+          bundler-cache: true
+      - run: make gem-test
+      - run: gem build rmcp_dsl.gemspec --output rmcp_dsl.gem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rmcp_dsl-gem
+          path: rmcp_dsl.gem

@@ -9,8 +9,8 @@ require "stringio"
 class TestCargoBuild < Minitest::Test
   def setup
     RmcpDsl::Notify.reset!
-    @ir = RmcpDsl.read("examples/add.rb")
-    files = RmcpDsl::Emit.files(@ir, "examples/add.rb")
+    @ir = RmcpDsl.read("examples/add.rmcp.rb")
+    files = RmcpDsl::Emit.files(@ir, "examples/add.rmcp.rb")
     @main = files["src/main.rs"].lines
     @map = JSON.parse(files[RmcpDsl::CargoBuild::MAP])
   end
@@ -39,7 +39,7 @@ class TestCargoBuild < Minitest::Test
                             "spans" => [{ "is_primary" => true, "file_name" => "src/main.rs", "line_start" => tool["from"] + 1 }] } }
     io = StringIO.new
     RmcpDsl::CargoBuild.report("#{JSON.generate(diag)}\n", @map, io)
-    assert_includes io.string, "examples/add.rb:#{tool['dsl_line']}: error: mismatched types"
+    assert_includes io.string, "examples/add.rmcp.rb:#{tool['dsl_line']}: error: mismatched types"
     assert_includes io.string, "RENDERED"
   end
 

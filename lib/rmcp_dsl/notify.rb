@@ -15,7 +15,10 @@ module RmcpDsl
               "N-RUST-INJECTED" => :notice,
               "W-RUST-FN-MISSING" => :warning,
               "N-EXEC-INJECTED" => :notice,
-              "N-BINDING" => :notice }.freeze
+              "N-BINDING" => :notice,
+              "N-OPENAPI" => :notice,
+              "W-OPENAPI-AUTH" => :warning,
+              "N-DEPRECATED-FEATURE" => :notice }.freeze
     GATES = { warning: "RMCP_DSL_WARN", notice: "RMCP_DSL_NOTICE" }.freeze
 
     @notes = []

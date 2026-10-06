@@ -15,7 +15,7 @@ module RmcpDsl
     LISTS = { "T::Array[String]" => :strs, "T::Array[I64]" => :i64s }.freeze
     TYPES = SCALARS.merge(LISTS).freeze
 
-    Fn = Struct.new(:name, :params, :returns, :rust, :body, :node, :no_reference, keyword_init: true)
+    Fn = Struct.new(:name, :params, :returns, :rust, :body, :node, :no_reference, :async, keyword_init: true)
 
     # A type the binding owns: Json::Value, the Rust type behind it, and whether it may cross the wire.
     Opaque = Struct.new(:name, :rust, :wire, :node, keyword_init: true)
@@ -27,7 +27,7 @@ module RmcpDsl
 
       def descriptor(fn)
         { "name" => wrapper(fn), "args" => fn.params.map { |n, t| [n, t.to_s] },
-          "returns" => fn.returns.to_s, "rust" => fn.rust, "body" => nil }
+          "returns" => fn.returns.to_s, "rust" => fn.rust, "body" => nil, "async" => fn.async ? true : false }
       end
     end
 
@@ -127,14 +127,27 @@ module RmcpDsl
           file.crates << [str(args[0]), str(args[1])]
         when :sig then state[:sig] = sig(node)
         when :rust
+          kw = args.last.is_a?(Prism::KeywordHashNode) ? args.pop : nil
           bad(node, "rust takes one template string") unless args.size == 1
           state[:rust] = str(args[0])
+          state[:rust_async] = rust_async(node, kw)
         when :no_reference
           bad(node, "no_reference takes a reason string") unless args.size == 1
           state[:no_reference] = str(args[0])
         when :example then file.examples << example(node, args)
         else bad(node, "unsupported call `#{node.name}` in a binding")
         end
+      end
+
+      def rust_async(node, kw)
+        return false unless kw
+
+        bad(node, "rust takes only `async: true` as a keyword") unless kw.elements.size == 1
+        el = kw.elements[0]
+        bad(node, "rust takes only `async: true` as a keyword") unless el.is_a?(Prism::AssocNode) && el.key.is_a?(Prism::SymbolNode) && el.key.unescaped == "async"
+        val = el.value
+        bad(val, "`async:` must be true or false") unless val.is_a?(Prism::TrueNode) || val.is_a?(Prism::FalseNode)
+        val.is_a?(Prism::TrueNode)
       end
 
       def str(node)
@@ -197,6 +210,7 @@ module RmcpDsl
         name = node.name.to_s
         sig = state.delete(:sig) or bad(node, "`#{name}` has no sig; every binding method declares its types")
         rust = state.delete(:rust)
+        async = state.delete(:rust_async)
         no_ref = state.delete(:no_reference)
         names = parameter_names(node)
         sig_names = sig[:params].map(&:first)
@@ -208,7 +222,8 @@ module RmcpDsl
         end
         bad(node, "`#{name}` has neither a rust template nor a Ruby body, so there is nothing to compile") if rust.nil? && empty
         file.fns[name] = Fn.new(name: name, params: sig[:params], returns: sig[:returns], rust: rust,
-                                body: empty ? nil : node.body, node: node, no_reference: no_ref)
+                                body: empty ? nil : node.body, node: node, no_reference: no_ref,
+                                async: async ? true : false)
       end
 
       def parameter_names(node)

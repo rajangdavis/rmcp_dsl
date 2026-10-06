@@ -9,6 +9,7 @@ inited='{"jsonrpc":"2.0","method":"notifications/initialized"}'
 list='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 rpc() { printf '{"jsonrpc":"2.0","id":%s,"method":"%s","params":%s}\n' "$1" "$2" "$3"; }
 call() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' "$1" "$2" "$3"; }
+call_meta() { printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s,"_meta":%s}}\n' "$1" "$2" "$3" "$4"; }
 
 out=$( { printf '%s\n%s\n%s\n' "$init" "$inited" "$list"
          call 10 search '{"query":"cats"}'
@@ -23,6 +24,9 @@ out=$( { printf '%s\n%s\n%s\n' "$init" "$inited" "$list"
          call 19 delete_note '{"id":3}'
          call 20 delete_note '{"id":0}'
          call 21 search '{"query":"x","limit":null}'
+         call 22 context '{}'
+         call 23 context '{"echo":"hi"}'
+         call_meta 24 context '{}' '{"progressToken":7}'
          printf '%s\n' '{"jsonrpc":"2.0","id":50,"method":"prompts/list"}'
          rpc 51 prompts/get '{"name":"summarize","arguments":{"topic":"cats"}}'
          rpc 52 prompts/get '{"name":"summarize","arguments":{"topic":"cats","style":"detailed"}}'
@@ -51,6 +55,8 @@ out=$( { printf '%s\n%s\n%s\n' "$init" "$inited" "$list"
          rpc 81 completion/complete '{"ref":{"type":"ref/resource","uri":"notekit://notes/{id}"},"argument":{"name":"id","value":"4"}}'
          rpc 82 completion/complete '{"ref":{"type":"ref/resource","uri":"notekit://nope/{x}"},"argument":{"name":"x","value":""}}'
          rpc 83 completion/complete '{"ref":{"type":"ref/resource","uri":"notekit://lists/{kind}"},"argument":{"name":"zzz","value":""}}'
+         rpc 84 completion/complete '{"ref":{"type":"ref/resource","uri":"notekit://notes/{id}"},"argument":{"name":"zzz","value":""}}'
+         rpc 85 completion/complete '{"ref":{"type":"ref/resource","uri":"notekit://notes/{id}"},"argument":{"name":"id","value":"9"}}'
          sleep 4; } | (cd "$dir" && cargo run -q) )
 printf '%s\n' "$out" | cut -c1-220
 
@@ -83,6 +89,20 @@ bad 18 "$out" 'is below the minimum of 0.5'
 is 19 "$out" 'deleted 3'
 bad 20 "$out" 'is below the minimum of 1'
 is 21 "$out" 'x|10|all|-|normal|false'
+# The tool body read the request context: the client, the negotiated protocol version, the request id,
+# the (absent) progress token and the cancellation flag.
+is 22 "$out" 'client=e2e version=0 protocol=2025-03-26 request=22 progress=none cancelled=false echo=none'
+is 23 "$out" 'client=e2e version=0 protocol=2025-03-26 request=23 progress=none cancelled=false echo=hi'
+# A tool that sends progress: nothing is sent without a token (22 and 23 above), and with one in `_meta`
+# the notification arrives before the result.
+is 24 "$out" 'client=e2e version=0 protocol=2025-03-26 request=24 progress=7 cancelled=false echo=none'
+printf '%s\n' "$out" | grep -q '"method":"notifications/progress"' || fail "progress notification"
+printf '%s\n' "$out" | grep -q '"progressToken":7' || fail "progress token"
+printf '%s\n' "$out" | grep -q '"total":2' || fail "progress total"
+printf '%s\n' "$out" | grep -q '"message":"half way"' || fail "progress message"
+pl=$(printf '%s\n' "$out" | grep -n '"method":"notifications/progress"' | head -1 | cut -d: -f1)
+rl=$(printf '%s\n' "$out" | grep -n '"id":24,' | head -1 | cut -d: -f1)
+[ -n "$pl" ] && [ -n "$rl" ] && [ "$pl" -lt "$rl" ] || fail "progress must arrive before the result"
 # Capabilities, prompts and resources
 has 1 "$out" '"prompts"';  has 1 "$out" '"resources"';  has 1 "$out" '"tools"'
 has 50 "$out" '"name":"summarize"'; has 50 "$out" '"name":"topic"'; has 50 "$out" '"required":true'
@@ -97,7 +117,7 @@ has 1 "$out" '"completions":{}'
 has 58 "$out" '"values":["short","detailed"]'; has 58 "$out" '"total":2'; has 58 "$out" '"hasMore":false'
 has 59 "$out" '"values":["detailed"]'
 has 60 "$out" '"values":[]'
-has 61 "$out" '"values":[]'
+has 61 "$out" '"values":["cats","cooking"]'; has 61 "$out" '"total":2'
 has 62 "$out" '"code":-32602'; has 62 "$out" 'unknown prompt `nope`'
 has 63 "$out" '"code":-32602'; has 63 "$out" 'prompt `summarize` has no argument `zzz`'
 # Resource templates (MCP resources/templates/list, resources/read, completion/complete with ref/resource)
@@ -115,9 +135,11 @@ has 77 "$out" '"code":-32002'; has 77 "$out" '"data":{"uri":"notekit://notes/1/2
 has 78 "$out" '"text":"The pinned notes"'
 has 79 "$out" '"code":-32602'; has 79 "$out" 'is not one of recent, pinned'
 has 80 "$out" '"values":["pinned"]'; has 80 "$out" '"total":1'; has 80 "$out" '"hasMore":false'
-has 81 "$out" '"values":[]'
+has 81 "$out" '"values":["42"]'; has 81 "$out" '"total":1'
 has 82 "$out" '"code":-32602'; has 82 "$out" 'unknown resource template `notekit://nope/{x}`'
 has 83 "$out" '"code":-32602'; has 83 "$out" 'resource template `notekit://lists/{kind}` has no argument `zzz`'
+has 84 "$out" '"code":-32602'; has 84 "$out" 'resource template `notekit://notes/{id}` has no argument `zzz`'
+has 85 "$out" '"values":[]'; has 85 "$out" '"total":0'
 # _meta: a static JSON literal on a tool, a prompt, a static resource and a resource template (keys come back sorted)
 has 2 "$out" '"_meta":{"com.example/limits":{"burst":5,"calls":100},"com.example/tier":"free"}'
 has 50 "$out" '"_meta":{"com.example/audience":["students","editors"]}'
