@@ -56,9 +56,10 @@ rbi-helpers-check:
 	rm -rf /tmp/rmcp_dsl_rbi_check && ruby exe/rmcp_dsl rbi examples/*.rb -o /tmp/rmcp_dsl_rbi_check
 	diff -u $(HELPER_RBI_DIR)/dsl_helpers.rbi /tmp/rmcp_dsl_rbi_check/dsl_helpers.rbi || { echo "$(HELPER_RBI_DIR)/dsl_helpers.rbi is stale: run make rbi-helpers"; exit 1; }
 
+# `bundle exec`: in CI (and for anyone without a global Sorbet) srb is only in the bundle, not on PATH.
 typecheck: rbi-check rbi-helpers-check
 
-	srb tc
+	bundle exec srb tc
 
 # Fast gate: parse, type-check and report notifications for every example, no output files.
 dsl-check:
