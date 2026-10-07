@@ -41,6 +41,19 @@ class TestCargoBuild < Minitest::Test
     RmcpDsl::CargoBuild.report("#{JSON.generate(diag)}\n", @map, io)
     assert_includes io.string, "examples/add.rmcp.rb:#{tool['dsl_line']}: error: mismatched types"
     assert_includes io.string, "RENDERED"
+    refute_includes io.string, "moved on one path"
+  end
+
+  def test_a_moved_value_error_names_the_fix
+    tool = @map["ranges"].find { |r| r["what"].start_with?("tool") }
+    diag = { "reason" => "compiler-message",
+             "message" => { "level" => "error", "message" => "use of moved value: `raw`", "rendered" => "RENDERED\n",
+                            "code" => { "code" => "E0382" },
+                            "spans" => [{ "is_primary" => true, "file_name" => "src/main.rs", "line_start" => tool["from"] + 1 }] } }
+    io = StringIO.new
+    RmcpDsl::CargoBuild.report("#{JSON.generate(diag)}\n", @map, io)
+    assert_includes io.string, "use of moved value: `raw`"
+    assert_includes io.string, "moved on one path"
   end
 
   def test_error_outside_any_declaration_keeps_rustcs_text

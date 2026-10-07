@@ -4,6 +4,14 @@
 # for the whole suite instead of once per generated crate.
 export CARGO_TARGET_DIR := $(CURDIR)/target
 
+# Generated crates are meant to be warning-free (the emitter scopes deprecated calls and the checked
+# helpers exist for exactly this). Deny rustc warnings in every cargo build this Makefile runs. Cargo
+# caps lints for dependencies with --cap-lints=allow, so this affects only the generated crate and its
+# injected modules, never rmcp or the rest of the graph. Turn clippy lints on later, with the emit.rb
+# and body.rb refactor.
+RUSTFLAGS ?= -Dwarnings
+export RUSTFLAGS
+
 # L1: Ruby shim tests against the catalog.
 test-ruby:
 	ruby -Ilib -Itest -e 'Dir.glob("test/test_*.rb").sort.reject { |f| %w[test_elicitation.rb test_roots.rb test_sampling.rb].include?(File.basename(f)) }.each { |f| require "./#{f}" }'

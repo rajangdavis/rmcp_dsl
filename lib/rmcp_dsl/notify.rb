@@ -10,7 +10,8 @@ module RmcpDsl
   module Notify
     Note = Struct.new(:code, :level, :path, :line, :col, :message)
 
-    CODES = { "W-STR-STRIP-RUBY" => :warning, "N-STR-STRIP-RUST" => :notice,
+    CODES = { "N-STR-STRIP-RUBY" => :notice, "N-STR-STRIP-RUST" => :notice,
+              "W-BINDING-UNLOADED" => :warning,
               "W-STR-CAPITALIZE" => :warning,
               "N-RUST-INJECTED" => :notice,
               "W-RUST-FN-MISSING" => :warning,

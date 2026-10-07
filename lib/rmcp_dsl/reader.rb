@@ -32,7 +32,7 @@ module RmcpDsl
       bad(nodes[0], "server name must match [a-z][a-z0-9_-]*") unless pos[0].match?(/\A[a-z][a-z0-9_-]*\z/)
       bad(nodes[0], "version must be semver like 0.1.0, got #{kw[:version].inspect}") unless kw[:version].match?(SEMVER)
       srv = { "name" => pos[0], "version" => kw[:version], "instructions" => kw[:instructions], "params" => [], "tools" => [], "transport" => nil, "regexes" => @regexes,
-             "crates" => [], "items" => [], "item_lines" => [], "externs" => {}, "modules" => [], "subprocs" => [], "binding_fns" => [], "opaque_types" => [], "settings" => [], "prompts" => [], "resources" => [], "outputs" => [], "features" => [],
+             "inputs" => [File.expand_path(@path)], "crates" => [], "items" => [], "item_lines" => [], "externs" => {}, "modules" => [], "subprocs" => [], "binding_fns" => [], "opaque_types" => [], "settings" => [], "prompts" => [], "resources" => [], "outputs" => [], "features" => [],
              "title" => kw[:title], "description" => kw[:description], "website_url" => kw[:website_url], "icon" => kw[:icon] }
       if kw.key?(:page_size)
         bad(nodes[0], "`page_size:` is how many items one page of tools, prompts, resources and resource templates holds; it must be at least 1") if kw[:page_size] < 1
@@ -73,8 +73,26 @@ module RmcpDsl
             bad(n, "`transport :http` needs `port:` (the generated server listens on 127.0.0.1 at that port)") unless k.key?(:port)
             bad(n, "`port:` must be 0 to 65535, got #{k[:port]}") if k[:port] > 65_535
             srv["port"] = k[:port]
-          elsif k.key?(:port)
-            bad(n, "`port:` only applies to `transport :http`")
+            if k.key?(:bind)
+              bad(n, "`bind:` is a host or IP address, such as \"0.0.0.0\" or \"127.0.0.1\"") unless k[:bind].match?(/\A[A-Za-z0-9_.:-]+\z/)
+              srv["bind"] = k[:bind]
+            end
+            if k.key?(:allowed_hosts)
+              bad(n, "`allowed_hosts:` needs at least one host, such as [\"host.docker.internal\"]") if k[:allowed_hosts].empty?
+              bad(n, "`allowed_hosts:` values are exact hosts or host:port, such as \"host.docker.internal\"") if k[:allowed_hosts].any? { |h| !h.match?(/\A[A-Za-z0-9_.:\[\]-]+\z/) }
+              srv["allowed_hosts"] = k[:allowed_hosts]
+            end
+            if k.key?(:allowed_origins)
+              bad(n, "`allowed_origins:` needs at least one origin, such as [\"https://app.example.com\"]") if k[:allowed_origins].empty?
+              bad(n, "`allowed_origins:` values need a scheme, such as \"https://app.example.com\"") if k[:allowed_origins].any? { |o| !o.match?(/\A[A-Za-z][A-Za-z0-9+.\-]*:\/\//) }
+              srv["allowed_origins"] = k[:allowed_origins]
+            end
+            %i[json_response stateless sse_keep_alive sse_retry max_body_bytes].each do |key|
+              srv[key.to_s] = k[key] if k.key?(key)
+            end
+          else
+            stray = %i[port bind allowed_hosts allowed_origins json_response stateless sse_keep_alive sse_retry max_body_bytes].find { |key| k.key?(key) }
+            bad(n, "`#{stray}:` only applies to `transport :http`") if stray
           end
           if k.key?(:auth_setting)
             bad(n, "`auth_setting:` only applies to `transport :http`") unless srv["transport"] == "http"
@@ -114,10 +132,41 @@ module RmcpDsl
       check_http_oauth(srv)
       reject_unused_declarations(srv)
       warn_missing_module_fns(srv)
+      check_unloaded_bindings(srv)
       srv
     end
 
     private
+
+    # A bindings/*.rb that no `use_bindings` names is never parsed, so its crates never reach
+    # Cargo.toml and the failure surfaces later as a missing crate in generated Rust. One bindings/
+    # folder can serve several servers, so skip a file a sibling .rmcp.rb names.
+    def check_unloaded_bindings(srv)
+      bdir = Bindings.dir_for(@path)
+      return unless File.directory?(bdir)
+
+      loaded = @bindings.each_value.map { |f| File.basename(f.path) }
+      dir = File.dirname(File.expand_path(@path))
+      Dir.glob(File.join(bdir, "*.rb")).sort.each do |path|
+        base = File.basename(path)
+        next if loaded.include?(base)
+        next if named_by_a_sibling?(dir, File.basename(base, ".rb"))
+
+        Notify.add(@path, @program, "W-BINDING-UNLOADED",
+                   "bindings/#{base} is not loaded by any `use_bindings` here; its crates are not declared (add `use_bindings :#{File.basename(base, '.rb')}` if this server needs it)")
+      end
+    end
+
+    def named_by_a_sibling?(dir, name)
+      pattern = /use_bindings\s+:#{Regexp.escape(name)}(?![\w?])/
+      Dir.glob(File.join(dir, "*.rmcp.rb")).any? do |other|
+        next false if File.expand_path(other) == File.expand_path(@path)
+
+        text = Lsp::Sources[other]
+        text ||= File.read(other, encoding: "UTF-8") if File.readable?(other)
+        text ? text.match?(pattern) : false
+      end
+    end
 
     # A declaration nothing uses would only become a rustc dead-code warning in the generated
     # crate. The DSL refuses it instead, so the file says exactly what the server does.
@@ -200,6 +249,7 @@ module RmcpDsl
       @bindings[name] = file
       @binding_modules[file.module_name] = file
       @binding_nodes[name] = node
+      srv["inputs"] << file.path
     end
 
     MAX_OPENAPI_BYTES = 20_000_000
@@ -220,6 +270,7 @@ module RmcpDsl
       real = File.realpath(full)
       bad(node, "openapi file must stay inside #{base_dir}") unless real.start_with?(base_dir + File::SEPARATOR)
       bad(node, "openapi file is larger than #{MAX_OPENAPI_BYTES} bytes") if File.size(real) > MAX_OPENAPI_BYTES
+      srv["inputs"] << real
       doc, plans = begin
         d = OpenApi.load(real)
         [d, OpenApi.plan(d, rel, include_tags: kw[:include_tags], exclude: kw[:exclude])]
@@ -408,7 +459,7 @@ module RmcpDsl
         backed = fns.count(&:rust)
         crates = file.crates.map(&:first)
         Notify.add(@path, @binding_nodes[name], "N-BINDING",
-                   "bindings/#{name}.rb: #{fns.size} function(s) used, #{backed} backed by Rust" \
+                   "bindings/#{name}.rb (sha256 #{RmcpDsl.short_digest(file.source)}): #{fns.size} function(s) used, #{backed} backed by Rust" \
                    "#{" (#{crates.join(', ')})" unless crates.empty?}, #{fns.size - backed} compiled from Ruby")
         fns.each do |fn|
           ir = file.descriptor(fn)
@@ -469,11 +520,12 @@ module RmcpDsl
       real = File.realpath(full)
       bad(node, "rust_file must stay inside #{base}") unless real.start_with?(base + File::SEPARATOR)
       bad(node, "rust_file is larger than #{MAX_RS_BYTES} bytes") if File.size(real) > MAX_RS_BYTES
-      source = File.read(real, encoding: "UTF-8")
+      source = Lsp::Sources[real] || File.read(real, encoding: "UTF-8")
       bad(node, "rust_file is not valid UTF-8") unless source.valid_encoding?
       srv["modules"] << { "name" => mod, "path" => rel, "source" => source, "uses" => kw[:uses]&.to_s }
+      srv["inputs"] << real
       Notify.add(@path, node, "N-RUST-INJECTED",
-                 "#{rel} (#{source.lines.size} line(s)) loaded as module `#{mod}`; the compiler does not check it")
+                 "#{rel} (#{source.lines.size} line(s), sha256 #{RmcpDsl.short_digest(source)}) loaded as module `#{mod}`; the compiler does not check it")
     end
 
     PROGRAM_RE = %r{\A[A-Za-z0-9._+/-]+\z}
@@ -913,7 +965,7 @@ module RmcpDsl
         note_field(n, field)
         fields << field
       end
-      bad(node, "params `#{pos[0]}` needs at least one `field`") if fields.empty?
+      # An empty params is allowed: an MCP tool can take no arguments at all (a ping, a scene snapshot).
       { "name" => pos[0], "fields" => fields, "line" => node.location.start_line }
     end
 

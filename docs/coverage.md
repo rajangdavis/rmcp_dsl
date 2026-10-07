@@ -58,7 +58,9 @@ The target is the server side of MCP as the rmcp 3.5.0 SDK exposes it. ✓ works
 | ✓ | streamable HTTP (`transport :http, port: 8080`): rmcp's own default service, sessions and host check, on 127.0.0.1 at `/mcp` |
 | ✓ | Bearer-token auth for HTTP (`transport :http, port: 8080, auth_setting: :api_token`): a layer in front of `/mcp` answers 401 with `WWW-Authenticate: Bearer` unless the request carries the secret setting's value |
 | ✓ | OAuth resource server for HTTP (`transport :http, port: 8080, oauth_issuer: :issuer, oauth_audience: :audience`, optional `oauth_resource:`): `/mcp` accepts only a JWT the issuer signed (RS256 or ES256, key from its JWKS found by RFC 8414 or OpenID Connect discovery) for that audience, and `/.well-known/oauth-protected-resource` (RFC 9728) says where to get one |
-| ✗ | The `StreamableHttpServerConfig` options (hosts, origins, stateless mode), and refresh or introspection of tokens; rmcp 3.5.0 has no SSE or WebSocket server transport |
+| ✓ | an HTTP bind address and the `Host` values the DNS-rebinding check accepts (`transport :http, port: 8080, bind: "0.0.0.0", allowed_hosts: ["host.docker.internal"]`), so a caller not on loopback can reach it with its own authority |
+| ✓ | the other `StreamableHttpServerConfig` options through `transport :http`: `allowed_origins:` (browser `Origin` check), `json_response:`, `stateless:` (SEP-2567), `sse_keep_alive:`, `sse_retry:` and `max_body_bytes:` |
+| ✗ | a custom `session_store` (rmcp 3.5.0 gives no builder and the struct is non-exhaustive), OAuth token refresh/introspection, and rmcp has no dedicated SSE or WebSocket server transport |
 | ✓ | progress notifications from a tool body (`progress(value, total:, message:)`), sent only when the client supplied a progress token |
 | ✓ | logging (`feature :logging`): advertises the capability, answers `logging/setLevel`, and a tool body's `log(level, message)` sends `notifications/message`; deprecated by SEP-2577 and opt-in, so the emitted call is scoped with `#[allow(deprecated)]` |
 | ✓ | the request context in a tool body: `client_name`, `client_version`, `protocol_version`, `request_id`, `progress_token`, `cancelled?` |

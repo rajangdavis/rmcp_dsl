@@ -1296,12 +1296,31 @@ module RmcpDsl
       [*BEARER_TOKEN_FN.lines.map(&:chomp), "", *text.lines.map(&:chomp)]
     end
 
+    # The HTTP config and bind address: the defaults, an allowed-Host list a caller not on loopback can add,
+    # and a bind address such a caller can dial (the default 127.0.0.1 is loopback-only).
+    def http_config(ir)
+      calls = []
+      hosts = ir["allowed_hosts"] || []
+      calls << ".with_allowed_hosts([#{hosts.map { |h| RmcpDsl.rstr(h) }.join(', ')}])" unless hosts.empty?
+      origins = ir["allowed_origins"] || []
+      calls << ".with_allowed_origins([#{origins.map { |o| RmcpDsl.rstr(o) }.join(', ')}])" unless origins.empty?
+      calls << ".with_json_response(true)" if ir["json_response"]
+      calls << ".with_legacy_session_mode(false)" if ir["stateless"]
+      calls << ".with_sse_keep_alive(Some(std::time::Duration::from_secs(#{ir['sse_keep_alive']})))" if ir["sse_keep_alive"]
+      calls << ".with_sse_retry(Some(std::time::Duration::from_secs(#{ir['sse_retry']})))" if ir["sse_retry"]
+      calls << ".with_max_request_body_bytes(#{ir['max_body_bytes']})" if ir["max_body_bytes"]
+      "rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default()#{calls.join}"
+    end
+
+    def http_bind(ir) = ir["bind"] || "127.0.0.1"
+
 # The settings the server reads from its environment: read once at startup (load_settings, called from main), then
     # read by bodies as settings().name. A value counts as set when it is not empty. A missing or unreadable variable
     # stops the server with a message that names the variables, never their values; Settings has no Debug, so a value
     # cannot be printed by accident either.
     def settings_runtime(ir)
       list = ir["settings"]
+      needs_missing = list.any? { |s| !s["optional"] && !s.key?("default") }
       fields = list.map { |s| "    #{s['name']}: #{s['optional'] ? 'Option<String>' : 'String'}," }
       reads = list.flat_map do |s|
         env = RmcpDsl.rstr(s["env"])
@@ -1334,7 +1353,7 @@ module RmcpDsl
        "            }",
        "        }",
        "    }",
-       "    let mut missing: Vec<&str> = Vec::new();",
+       "    let #{needs_missing ? 'mut ' : ''}missing: Vec<&str> = Vec::new();",
        "    let mut problems: Vec<String> = Vec::new();",
        *reads,
        "    if !missing.is_empty() || !problems.is_empty() {",
@@ -1863,7 +1882,11 @@ module RmcpDsl
         end
       lines = out ? output_lines(b, out) : body_lines(b, mcp: true, force: checked || blocks)
       lines = with_notification(tool, ret, lines) if tool["updates"] || tool["list_changed"]
-      [tool_attr(tool), *head, *lines.map { |l| "        #{l}" }, "    }"]
+      # A body that used a SEP-2577 feature (roots, sampling, logging) touches deprecated rmcp items; the
+      # whole tool fn is scoped, because a field read of a deprecated value lives in the caller's block,
+      # not in the scoped call. Keeps the generated crate warning-free under -D warnings.
+      allow_deprecated = b["uses_deprecated"] ? ["    #[allow(deprecated)]"] : []
+      [*allow_deprecated, tool_attr(tool), *head, *lines.map { |l| "        #{l}" }, "    }"]
     end
 
     # Compiles every regex under `cargo test`, so a pattern Rust rejects fails a test
@@ -1924,10 +1947,10 @@ module RmcpDsl
           "        rmcp::transport::streamable_http_server::StreamableHttpService::new(",
           "            || Ok(#{srv}),",
           "            Default::default(),",
-          "            rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default(),",
+          "            #{http_config(ir)},",
           "        );",
           "    let router = axum::Router::new().nest_service(\"/mcp\", service)#{router_auth(ir)};",
-          "    let listener = tokio::net::TcpListener::bind(\"127.0.0.1:#{ir['port']}\").await?;",
+          "    let listener = tokio::net::TcpListener::bind(\"#{http_bind(ir)}:#{ir['port']}\").await?;",
           "    axum::serve(listener, router).await?;",
           "    Ok(())",
           "}"

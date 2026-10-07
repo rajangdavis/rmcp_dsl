@@ -10,6 +10,17 @@ module RmcpDsl
       class << self
         def [](path) = @table[path]
 
+        # Compiles the block with a whole table of documents standing in for their paths — an editor's
+        # open buffers, so a compilation of one file reads another (a binding, a rust_file) from its
+        # buffer. The table is put back after, so a plain RmcpDsl.read elsewhere reads disk again.
+        def with_all(table)
+          before = @table
+          @table = table
+          yield
+        ensure
+          @table = before
+        end
+
         # Compiles the block with `text` standing in for `path`, then puts things back.
         def with(path, text)
           before = @table[path]

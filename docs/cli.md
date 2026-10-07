@@ -13,6 +13,7 @@ _See also: [README](../README.md)._
 | `rmcp_dsl run FILE [-o DIR] [--release]` | Build, then start the server on stdio. |
 | `rmcp_dsl init NAME [-o DIR] [--force] [--no-bindings]` | Scaffold a new project: write `DIR/NAME.rmcp.rb` (a minimal server that compiles) and a `DIR/bindings/` folder holding a `.gitkeep` so an empty folder survives version control. Refuses to overwrite an existing file without `--force`; `--no-bindings` skips the folder. Default `DIR` is `.`. |
 | `rmcp_dsl skill [-o DIR]` | Write an agent skill folder (`rmcp-dsl/SKILL.md` plus references) that teaches the DSL. The reference pages are generated from the compiler, so they match the installed version. |
+| `--print-inputs` | Print the paths the compiler read — the DSL file, every `use_bindings` file, each `rust_file` and each `openapi` document — one per line, and exit. A watcher built from this list is correct by construction. `check --format json` also carries them as `inputs`. |
 | `--warn SPEC`, `--notice SPEC` | Choose which notifications are printed (`all`, `none`, or codes). |
 | `--version` | Print the version. |
 

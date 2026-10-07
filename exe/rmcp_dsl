@@ -26,6 +26,7 @@ format = "text"
 types = false
 force = false
 no_bindings = false
+print_inputs = false
 parser = OptionParser.new do |o|
   o.banner = "usage: rmcp_dsl check FILE.rb [--format json]\n" \
              "       rmcp_dsl build FILE.rb [-o DIR] [--release] [--emit-only]\n" \
@@ -44,6 +45,7 @@ parser = OptionParser.new do |o|
   o.on("--no-bindings", "init: do not create a bindings/ folder") { no_bindings = true }
   o.on("--format FMT", %w[text json], "check: text (default) or json, one document on stdout") { |v| format = v }
   o.on("--types", "check --format json: add `types`, the inferred type of every parameter, local and expression") { types = true }
+  o.on("--print-inputs", "print the file paths the compiler read (the DSL file, its use_bindings, rust_file and openapi inputs), one per line, and exit") { print_inputs = true }
   o.on("--warn SPEC", "all|none|CODE,CODE: which warnings to print (sets RMCP_DSL_WARN)") { |v| ENV["RMCP_DSL_WARN"] = v }
   o.on("--notice SPEC", "all|none|CODE,CODE: which notices to print (sets RMCP_DSL_NOTICE)") { |v| ENV["RMCP_DSL_NOTICE"] = v }
 end
@@ -80,8 +82,9 @@ when "run"
   abort parser.to_s if dump || check || emit_only || json
   out ||= File.join("build", File.basename(file, ".rb"))
 else
-  abort parser.to_s if [out, dump, check].count { |m| m } != 1 || release || emit_only || json
+  abort parser.to_s if ([out, dump, check].count { |m| m } != 1 && !print_inputs) || release || emit_only || json
 end
+abort parser.to_s if print_inputs && (json || %w[init skill rbi lsp].include?(cmd))
 
 # The starter file `init` writes: the smallest server the compiler accepts, named for the project.
 def init_source(name)
@@ -183,13 +186,17 @@ end
 begin
   collector = RmcpDsl::TypeNames::Collector.new(file) if types
   ir = RmcpDsl.read(file, types: collector)
+  if print_inputs
+    puts ir["inputs"].uniq
+    exit 0
+  end
   if dump
     puts JSON.pretty_generate(ir)
   elsif check
     if json
       shown = RmcpDsl::Notify.visible
       notes = shown.map { |n| n.to_h.merge(file: n.path).except(:path) }
-      doc = { ok: true, file: file, notes: notes, hidden: RmcpDsl::Notify.notes.size - shown.size }
+      doc = { ok: true, file: file, inputs: ir["inputs"].uniq, notes: notes, hidden: RmcpDsl::Notify.notes.size - shown.size }
       doc[:types] = collector.entries if collector
       puts JSON.generate(doc)
     else

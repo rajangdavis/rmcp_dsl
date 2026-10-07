@@ -181,9 +181,34 @@ module RmcpDsl
       end
 
       def store(uri, text, version)
-        analysis = Analysis.new(uri_to_path(uri), text)
-        @documents[uri] = Document.new(text, version, analysis)
-        publish(uri, analysis.diagnostics.map { |d| lsp_diagnostic(analysis, d) }, version)
+        path = uri_to_path(uri)
+        @documents[uri] = Document.new(text, version, nil)
+        document = analyse(uri)
+        @documents[uri] = document
+        publish(uri, document.analysis.diagnostics.map { |d| lsp_diagnostic(document.analysis, d) }, version)
+        refresh_dependents(uri) unless path.end_with?(".rmcp.rb")
+      end
+
+      # Analyses one open document with every open document standing in for its path (so a binding is
+      # read from its buffer), then puts the shared table back: a later plain read reads disk again.
+      def analyse(uri)
+        doc = @documents[uri]
+        table = @documents.to_h { |u, d| [uri_to_path(u), d.text] }
+        analysis = Sources.with_all(table) { Analysis.new(uri_to_path(uri), doc.text) }
+        Document.new(doc.text, doc.version, analysis)
+      end
+
+      # A binding or rust_file changed, so every open DSL document's cached analysis is stale: re-analyse
+      # and republish it. Only DSL documents depend on other files, so only they are refreshed.
+      def refresh_dependents(changed_uri)
+        @documents.each do |uri, _doc|
+          next if uri == changed_uri
+          next unless uri_to_path(uri).end_with?(".rmcp.rb")
+
+          refreshed = analyse(uri)
+          @documents[uri] = refreshed
+          publish(uri, refreshed.analysis.diagnostics.map { |d| lsp_diagnostic(refreshed.analysis, d) }, refreshed.version)
+        end
       end
 
       def publish(uri, diagnostics, version)

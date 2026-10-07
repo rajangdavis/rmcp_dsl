@@ -23,8 +23,12 @@ the path it looked for.
 **A binding never fails by itself.** A nil-able return type (`T.nilable(String)`,
 `T.nilable(T::Array[String])`) means "does not exist" or "does not parse", and the server decides what that
 means: `Html.select(page, css) || []` to carry on, `|| raise("invalid selector")` to fail, `.nil?` to test.
-Types are `String`, `Float`, `I32`, `I64`, `T::Boolean`, `T::Array[String]`, `T::Array[I64]`, and
-`T.nilable` of those as a return type. `rmcp_dsl skill` explains the format with a worked example.
+Types are `String`, `Float`, `I32`, `I64`, `T::Boolean`, `T::Array[String]`, `T::Array[I64]`,
+`T::Array[Float]`, and `T.nilable` of those as a return type. A parameter cannot be nil-able yet (only a
+return can), and a params list field cannot take `default:`, so make it `optional: true` and fold nil in the
+body (`names || []`). A binding's opaque type (`class Value < RmcpDsl::Opaque`) is owned by the module that
+declares it, so a second binding cannot name it — keep the type and the functions that use it in one binding.
+`rmcp_dsl skill` explains the format with a worked example.
 
 Each method has a `sig`, a `rust "..."` template (or a Ruby body that is compiled), and examples. With a
 template the Ruby body is the answer key the tests compare the crate against; `no_reference "why"` marks a
@@ -48,6 +52,10 @@ script_fn :run_echo, interpreter: "sh", args: [:string], returns: :string, code:
   printf '%s' "$1"
 SH
 ```
+
+A `rust_fn`'s declared name is the Rust function's own name: `rust_fn :to_snake, args: [:string], returns: :string, from: :loud`
+finds `fn to_snake` inside the `loud` module (the `rust_file` with `as: :loud`), and `rust(:to_snake, ...)` is how a
+body calls it — so the declared name must match the Rust function exactly.
 
 `rust "expr", async: true` on a binding method, or `rust_fn ... async: true`, declares an `async fn`: its
 `returns:`/sig is the eventual value, and a body that calls it is compiled `async fn` and awaits the result

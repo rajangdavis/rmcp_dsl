@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "prism"
+require "digest"
 require_relative "rmcp_dsl/version"
 require "json"
 
@@ -43,6 +44,10 @@ module RmcpDsl
   end
 
   def self.read(path, types: nil) = Reader.new(path, types: types).read
+
+  # A short content digest, for a notice that names which bytes of an input a build read: a driver can
+  # compare it against a buffer to tell whether the build used stale disk text.
+  def self.short_digest(text) = Digest::SHA256.hexdigest(text)[0, 12]
 end
 
 require_relative "rmcp_dsl/suggest"

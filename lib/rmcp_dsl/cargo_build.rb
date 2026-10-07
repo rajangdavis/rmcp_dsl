@@ -44,11 +44,20 @@ module RmcpDsl
       hit = span && span["file_name"] == "src/main.rs" && locate(map, span["line_start"])
       if hit
         io.puts "#{map['source']}:#{hit['dsl_line']}: #{m['level']}: #{m['message']} " \
-                "(in #{hit['what']}; generated src/main.rs:#{span['line_start']})"
+                "(in #{hit['what']}; generated src/main.rs:#{span['line_start']})#{move_hint(m)}"
       end
       io.puts m["rendered"] if m["rendered"]
     rescue JSON::ParserError
       io.puts line
+    end
+
+    # A moved-value error (rustc E0382) is move semantics the DSL makes easy to hit: `x || default`
+    # moves x, so reading x again on another path fails. Name the fix, since rustc's own help is
+    # buried in the rendered text below.
+    def move_hint(m)
+      return "" unless m.dig("code", "code") == "E0382"
+
+      "; a value is moved on one path and read on another: make both branches yield the same non-nil value, or clone it before the move"
     end
 
     def locate(map, line) = map["ranges"].find { |r| r["from"] <= line && line <= r["to"] }

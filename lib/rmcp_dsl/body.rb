@@ -76,7 +76,7 @@ module RmcpDsl
     # Typed maps (T::Hash[String, V]); see CompositeTypes. Like a list they are only ever borrowed.
     MAPS = CompositeTypes::MapTable.new
     MAP_ARITY = { :[] => 1, :fetch => 1..2, :key? => 1, :has_key? => 1, :member? => 1, :include? => 1, :keys => 0,
-                  :values => 0, :size => 0, :length => 0, :empty? => 0, :merge => 1, :map => 0, :select => 0, :reject => 0, :each => 0 }.freeze
+                  :values => 0, :size => 0, :length => 0, :empty? => 0, :merge => 1, :map => 0, :select => 0, :reject => 0, :each => 0, :to_json => 0 }.freeze
     LIST_BLOCK = %i[each select reject find any? all? count].freeze
     # List types and their element types. Code that differs between the kinds lives in list_call and its
     # helpers; everything else treats a list as opaque.
@@ -111,8 +111,10 @@ module RmcpDsl
       @externs = externs
       @flags = flags
       @tool = tool
+      @body_line = nil      # the line the enclosing body opened at, named when a top-level declaration lands inside it
       @fallible = false
       @uses_context = false # a tool body read a request-context built-in (CONTEXT_BUILTINS)
+      @uses_deprecated = false # a tool body used a SEP-2577 feature (roots, sampling, logging)
       @uses_async = false   # a tool body (or a helper it calls) awaits, so its fn is async
       @async_reason = nil   # the first construct that made the body async, for diagnostics and hover
       @uses_tool_visibility = false # a tool body hides or shows a tool (hide_tool/show_tool)
@@ -127,6 +129,7 @@ module RmcpDsl
     end
 
     def lower(blk, output = nil)
+      @body_line = blk.location.start_line
       names = block_params(blk.parameters)
       @ret = :"struct:#{output}" if output
       env = names.to_h { |n| [n.to_sym, @types.fetch(n)] }
@@ -157,7 +160,8 @@ module RmcpDsl
       type = output ? "struct:#{output}" : (%i[block blocks].include?(t) ? "blocks" : (%i[rcontent rcontents].include?(t) ? "rcontents" : "string"))
       { "args" => names, "locals" => lets, "expr" => e, "type" => type, "fallible" => @fallible,
         "uses_context" => @uses_context, "uses_async" => @uses_async, "async_reason" => @async_reason, "uses_uri" => @used_read_uri,
-        "uses_elicit" => @uses_elicit, "tool_visibility" => @uses_tool_visibility }
+        "uses_elicit" => @uses_elicit, "tool_visibility" => @uses_tool_visibility,
+        "uses_deprecated" => @uses_deprecated }
 
     end
 
@@ -215,7 +219,7 @@ module RmcpDsl
 
     # `name = expr` as a statement. The local is declared once and may not be reassigned.
     def let_stmt(n, env)
-      bad(n, "unsupported #{nodename(n)} as a statement (only `name = expr`, a guard clause, `progress(...)`, `log(...)`, `hide_tool(...)`, `show_tool(...)` or `.each { ... }` before the last expression)") unless n.is_a?(Prism::LocalVariableWriteNode)
+      bad(n, "unsupported #{nodename(n)} as a statement (only `name = expr`, a guard clause, `progress(...)`, `log(...)`, `hide_tool(...)`, `show_tool(...)` or `.each { ... }` before the last expression)#{top_level_hint(n)}") unless n.is_a?(Prism::LocalVariableWriteNode)
       bad(n, "`#{n.name}` is already defined (no reassignment)") if env.key?(n.name)
       bad(n, "local `#{n.name}` must be snake_case and not a Rust keyword") if !n.name.to_s.match?(SNAKE) || RUST_KW.include?(n.name.to_s)
       e, t, = expr(n.value, env)
@@ -223,6 +227,14 @@ module RmcpDsl
       @declared << [n.name, n, "local"]
       note_decl(n.name_loc, n.name, "local", t)
       ["let #{n.name} = #{e};"]
+    end
+
+    # A statement that only belongs at the top level (`params`, `tool`, `field`, ...) usually means an
+    # unbalanced `end` above: the enclosing body swallowed it. Name that body and where it opened.
+    def top_level_hint(n)
+      return nil unless n.is_a?(Prism::CallNode) && SIG.key?(n.name) && @tool
+
+      "; `#{n.name}` is a top-level declaration, and the enclosing #{@tool} body, opened at line #{@body_line}, is still open: check for a missing `end` above"
     end
 
     # Is this node a bare `.each { ... }` call in statement position? It must have a receiver and a block.
@@ -347,6 +359,7 @@ module RmcpDsl
       when Prism::StringNode then [RmcpDsl.rstr(n.unescaped), :str, true]
       when Prism::TrueNode then ["true", :bool, true]
       when Prism::FalseNode then ["false", :bool, true]
+      when Prism::NilNode then ["None", :nil, true]
       when Prism::LocalVariableReadNode
         @read[n.name] = true
         [n.name.to_s, env.fetch(n.name) { bad(n, "undefined local `#{n.name}`") }, true]
@@ -408,6 +421,13 @@ module RmcpDsl
         return ["#{wrap(l)}.unwrap_or_default()", OPT.fetch(l[1]), true]
       end
 
+      if n.is_a?(Prism::OrNode) && !OPT.key?(l[1]) &&
+         ((n.right.is_a?(Prism::ArrayNode) && n.right.elements.empty?) ||
+          (n.right.is_a?(Prism::HashNode) && n.right.elements.empty?))
+        empty = n.right.is_a?(Prism::HashNode) ? "{}" : "[]"
+        bad(n.right, "`#{n.left.slice}` is not nilable, so `||` gives `#{empty}` no element type; drop the fallback")
+      end
+
       r = expr(n.right, env)
       return opt_or(n, l, r) if n.is_a?(Prism::OrNode) && OPT.key?(l[1])
 
@@ -420,15 +440,24 @@ module RmcpDsl
       bad(n.predicate, "condition must be bool, got #{c[1]}") unless c[1] == :bool
       sub = n.subsequent
       bad(n, "`if` used as a value needs an `else` branch") unless sub
-      tb, tt = branch(n.statements, env, n)
+      tl, te, tt = branch(n.statements, env, n)
+      fl = nil
       if sub.is_a?(Prism::IfNode)
         fb, ft, = cond(sub, env)
       elsif sub.is_a?(Prism::ElseNode)
-        fb, ft = branch(sub.statements, env, sub)
+        fl, fe, ft = branch(sub.statements, env, sub)
       else
         bad(sub, "unsupported #{nodename(sub)} in `if`")
       end
-      ["if #{c[0]} #{tb} else #{fb}", unify(n, tt, ft), false]
+      type = unify(n, tt, ft)
+      tb = branch_block(tl, coerce(te, tt, type) || te)
+      if fl
+        fb = branch_block(fl, coerce(fe, ft, type) || fe)
+      else
+        coerced = coerce(fb, ft, type)
+        fb = "{ #{coerced} }" if coerced && coerced != fb
+      end
+      ["if #{c[0]} #{tb} else #{fb}", type, false]
     end
 
     # A :str branch becomes an owned String so both arms of an `if` have one Rust type.
@@ -437,8 +466,12 @@ module RmcpDsl
       lets, e, t, = stmts(st, env.dup)
       e = unparen(e)
       e, t = "#{e}.to_string()", :string if t == :str
-      ["{ #{(lets + [e]).join(' ')} }", t]
+      [lets, e, t]
     end
+
+    # A branch's local statements and result as one Rust block, so `if`/`else`/`case` arms are blocks
+    # (Rust requires a block after `if`/`else`, and coercing `Some(...)` must stay inside it).
+    def branch_block(lets, code) = "{ #{(lets + [code]).join(' ')} }"
 
     # A nested object, required (:"struct:Name") or optional (:"opt<struct:Name>").
     def object_type?(sym)
@@ -626,9 +659,12 @@ module RmcpDsl
       bad(n.predicate, "condition must be bool, got #{c[1]}") unless c[1] == :bool
       els = n.else_clause
       bad(n, "`unless` used as a value needs an `else` branch") unless els
-      ub, ut = branch(n.statements, env, n)
-      eb, et = branch(els.statements, env, els)
-      ["if #{c[0]} #{eb} else #{ub}", unify(n, ut, et), false]
+      ul, ue, ut = branch(n.statements, env, n)
+      el, ee, et = branch(els.statements, env, els)
+      type = unify(n, ut, et)
+      ub = branch_block(ul, coerce(ue, ut, type) || ue)
+      eb = branch_block(el, coerce(ee, et, type) || ee)
+      ["if #{c[0]} #{eb} else #{ub}", type, false]
     end
 
     # `raise "message"` ends the tool call with an MCP error result (isError: true) that carries
@@ -797,13 +833,13 @@ module RmcpDsl
       bad(node.predicate, "`case` subject must be a string or an integer, got #{subj[1]}") unless kind
       arms = node.conditions.map do |w|
         bad(w, "unsupported #{nodename(w)} in `case`") unless w.is_a?(Prism::WhenNode)
-        body, type = branch(w.statements, env, w)
-        [w.conditions.map { |c| when_test(c, kind) }.join(" || "), body, type]
+        wl, we, wt = branch(w.statements, env, w)
+        [w.conditions.map { |c| when_test(c, kind) }.join(" || "), wl, we, wt]
       end
-      eb, et = branch(node.else_clause.statements, env, node.else_clause)
-      type = arms.reduce(et) { |acc, (_, _, t)| unify(node, acc, t) }
-      chain = arms.map { |test, body, _| "if #{test} #{body}" }.join(" else ")
-      ["{ let __k = &#{wrap(subj)}; #{chain} else #{eb} }", type, false]
+      el, ee, et = branch(node.else_clause.statements, env, node.else_clause)
+      type = arms.reduce(et) { |acc, (_, _, _, t)| unify(node, acc, t) }
+      chain = arms.map { |test, wl, we, t| "if #{test} #{branch_block(wl, coerce(we, t, type) || we)}" }.join(" else ")
+      ["{ let __k = &#{wrap(subj)}; #{chain} else #{branch_block(el, coerce(ee, et, type) || ee)} }", type, false]
     end
 
     def when_test(cond, kind)
@@ -852,6 +888,7 @@ module RmcpDsl
     # fits a string, an integer literal an integer type, and a plain value fits its nil-able type (as Some).
     def coerce(code, type, want)
       return code if type == want
+      return "None" if type == :nil && OPT.key?(want)
       return "#{code}.to_string()" if type == :str && want == :string
       return code if type == :int && %i[i32 i64].include?(want)
       return code if type == :empty_map && MAPS.key?(want)
@@ -947,6 +984,7 @@ module RmcpDsl
     # A helper body: its parameters have the declared types and its last expression must fit the declared
     # result. `return` and `raise` inside it leave the helper, and the caller sees an error result.
     def lower_helper(blk, names, types, ret, kw_params = nil)
+      @body_line = blk.location.start_line
       @ret = ret
       @helper = true
       env = {}
@@ -1341,6 +1379,9 @@ module RmcpDsl
       when :size, :length then ["(#{wrap(recv)}.len() as i64)", :i64, true]
       when :empty? then ["#{wrap(recv)}.is_empty()", :bool, true]
       when :map, :select, :reject, :each then map_block(node, name, recv, env, value)
+      when :to_json
+        @fallible = true
+        ["rmcp::serde_json::to_string(&#{wrap(recv)}).map_err(|e| format!(\"json: {e}\"))?", :string, true]
       else map_merge(node, recv, args, env)
       end
     end
@@ -2008,6 +2049,7 @@ module RmcpDsl
       @uses_async = true
       @async_reason ||= "sends a log message"
       @fallible = true
+      @uses_deprecated = true
       ["#[allow(deprecated)]",
        "__ctx.peer.notify_logging_message(rmcp::model::LoggingMessageNotificationParam::new(rmcp::model::LoggingLevel::#{level}, rmcp::serde_json::Value::String(#{message}))).await.map_err(|e| format!(\"logging notification failed: {e}\"))?;"]
     end
@@ -2123,6 +2165,7 @@ module RmcpDsl
       @uses_async = true
       @async_reason ||= "asks the client for its roots"
       @fallible = true
+      @uses_deprecated = true
       ["{ #[allow(deprecated)] let __roots = __ctx.peer.list_roots().await.map_err(|e| format!(\"roots/list failed: {e}\"))?; __roots.roots }",
        :roots_result, false]
     end
@@ -2185,6 +2228,7 @@ module RmcpDsl
       @uses_async = true
       @async_reason ||= "asks the client's LLM for a completion"
       @fallible = true
+      @uses_deprecated = true
       rust = <<~RS
         {
             #[allow(deprecated)]
@@ -2285,6 +2329,7 @@ module RmcpDsl
     # A binding method written in Ruby (no rust template): the Ruby body IS the implementation.
     def lower_def(fn)
       node = fn.node
+      @body_line = node.location.start_line
       env = fn.params.to_h { |n, t| [n.to_sym, t] }
       fn.params.each_with_index { |(n, _), i| @declared << [n.to_sym, node.parameters.requireds[i], "parameter"] }
       st = node.body
@@ -2338,7 +2383,9 @@ module RmcpDsl
       @fallible = true
       kind = (rust ? RUST_OP_KIND : OP_KIND).fetch(op)
       (@flags["checked"] ||= {})["#{kind}:#{t}"] = true
-      ["ck_#{kind}_#{t}(#{wrap(l)}, #{wrap(r)}, #{RmcpDsl.rstr(where(node))})?", rust ? RINT_OF.fetch(t) : t, true]
+      # unparen drops one redundant outer pair from a cast operand: `ck_add_i64((x as i64), 1, ...)` makes
+      # rustc warn (unused_parens), while `ck_add_i64(x as i64, 1, ...)` does not.
+      ["ck_#{kind}_#{t}(#{unparen(wrap(l))}, #{unparen(wrap(r))}, #{RmcpDsl.rstr(where(node))})?", rust ? RINT_OF.fetch(t) : t, true]
     end
 
     def checked_neg(node, recv)
@@ -2349,7 +2396,7 @@ module RmcpDsl
     end
 
     def note_strip(node)
-      Notify.add(@path, node, "W-STR-STRIP-RUBY",
+      Notify.add(@path, node, "N-STR-STRIP-RUBY",
                  "Ruby strip (NUL and ASCII whitespace) compiles to an explicit-set trim, not Rust trim()")
     end
 
@@ -2435,7 +2482,15 @@ module RmcpDsl
       return a if b == :never
       return b if a == :int && INTS.include?(b)
       return a if b == :int && INTS.include?(a)
-      bad(n, "type mismatch: #{a} vs #{b}")
+      if a == :nil || b == :nil
+        return :nil if a == :nil && b == :nil
+
+        nilable = a == :nil ? b : a
+        return nilable if OPT.key?(nilable)
+        return OPT_OF.fetch(nilable) if OPT_OF.key?(nilable)
+      end
+      hint = " (a string literal is a borrowed `str`; use interpolation or `.to_s`)" if (a == :str && b == :string) || (a == :string && b == :str)
+      bad(n, "type mismatch: #{a} vs #{b}#{hint}")
     end
   end
 end

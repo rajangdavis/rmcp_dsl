@@ -85,7 +85,7 @@ module RmcpDsl
     body: { in: %i[tool prompt resource], names: [], pos: [], kw: {}, block: :body },
     message: { in: :prompt, names: [:role], pos: [%i[user assistant]], kw: {}, block: :body },
     complete: { in: %i[prompt resource], names: [], pos: [], kw: {}, block: :body },
-    transport: { in: :server, names: [:kind], pos: [%i[stdio http]], kw: { port: [:uint, false], auth_setting: [:snake, false], oauth_issuer: [:snake, false], oauth_audience: [:snake, false], oauth_resource: [:snake, false] }, block: nil },
+    transport: { in: :server, names: [:kind], pos: [%i[stdio http]], kw: { port: [:uint, false], bind: [:str, false], allowed_hosts: [:strs, false], allowed_origins: [:strs, false], json_response: [:bool, false], stateless: [:bool, false], sse_keep_alive: [:uint, false], sse_retry: [:uint, false], max_body_bytes: [:uint, false], auth_setting: [:snake, false], oauth_issuer: [:snake, false], oauth_audience: [:snake, false], oauth_resource: [:snake, false] }, block: nil },
     # A server-level feature gate: `feature :logging` is required before a gated body built-in such as
     # `log(...)` may be used, advertises the capability, and scopes the generated `#[allow(deprecated)]`.
     feature: { in: :server, names: [:name], pos: [Features::NAMES], kw: {}, block: nil },

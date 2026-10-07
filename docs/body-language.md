@@ -15,13 +15,17 @@ instead. `rmcp_dsl skill` writes the complete, generated reference; the outline:
   scalar, object or nested-map values (`map(:i64)`, `map(:Address)`, `map(map(:i64))`), and fields of a nested
   object (`address.city`, or `address&.city` when the object is optional; an unguarded `address.city` on it is
   refused; an object cannot be put in a string, read its fields).
-- **Syntax:** literals, locals (`name = expr`, no reassignment), arithmetic and comparisons, `&& || !`,
+- **Syntax:** literals, locals (`name = expr`, no reassignment; a name must be snake_case and not a Rust
+  keyword), arithmetic and comparisons, `&& || !`,
   `if`/`elsif`/`else`, `unless`, ternary, `case`/`when`, string interpolation, guard clauses
-  (`return "x" if cond`, `raise "msg" unless cond`), and blocks with one parameter.
+  (`return "x" if cond`, `raise "msg" unless cond`), and blocks with one parameter. A body's block
+  parameters are the params field names, in order; they cannot be renamed or aliased.
 - **Strings:** `upcase downcase strip capitalize length split partition chars lines reverse tr delete
   squeeze index start_with? end_with? include? empty? match? =~ gsub sub to_i`, slicing `s[start, len]` and
   `s[i]`, `s * n`, and `Integer(text, 10)`. `gsub`/`sub` take a string or regex literal, or a block; `=~`
-  takes a regex literal and gives the character index of the first match (nil when none).
+  takes a regex literal and gives the character index of the first match (nil when none). A string literal is a
+  borrowed `str`: `s + "x"` concatenates, but `"x" + s` is refused; use interpolation or `.to_s` when the literal
+  comes first.
 - **Lists:** `split`, array literals, `n.times`, `a.upto(b)`, ranges `(a..b)`, and `map select reject
   find any? all? count sum min max sort uniq reverse first last [] join include? empty?`; `each` is a
   statement that runs its block for side effects and returns the list. Blocks may use arithmetic, `to_i`,
@@ -29,17 +33,28 @@ instead. `rmcp_dsl skill` writes the complete, generated reference; the outline:
   each map select reject find any? all? count reverse`; ordering, equality and stringification (`sort`,
   `uniq`, `include?`, `join`, `sum`, `min`, `max`) are refused.
 - **Maps.** A typed map is read-only. `m["k"]` is nil-able, and `fetch key? keys values size empty? merge`
-  read it; `map`, `select`, `reject` and `each` take a `|k, v|` block (the String key and the value): `map`
-  returns a list built from the block, `select`/`reject` a new map of the same value type, and `each` runs
-  the block for side effects and returns the map.
+  read it; `to_json` writes it as a JSON string (a value serde cannot write is an error result); `map`,
+  `select`, `reject` and `each` take a `|k, v|` block (the String key and the value): `map` returns a list
+  built from the block, `select`/`reject` a new map of the same value type, and `each` runs the block for
+  side effects and returns the map.
 - **Nil-able values.** Methods that return nil in Ruby (`first`, `last`, `xs[i]`, `index`, `=~`, optional fields,
   nil-able binding results) must be used through `|| default`, `|| raise("msg")`, `.nil?` or `.to_s`, so a
-  missing value is never silently used. An optional nested object is read with `&.` (`address&.city`).
+  missing value is never silently used. `||` is for nil-able values only: on a required one it is refused, so a
+  required list takes no `|| []` fallback. An optional nested object is read with `&.` (`address&.city`).
+- **Moves.** A local is moved when it is used, and `||` moves its left operand, so `x || default`
+  followed by another read of `x` is rustc's `E0382` (`use of moved value`). Make each path yield the
+  value once (pick the result in one expression) rather than reusing a moved local.
 - **Errors.** `raise "msg"` and integer overflow end the call with an error result (`isError: true`).
-  `return value` ends it with that string, even from inside a list block.
+  `return value` ends it with that string, even from inside a list block. There is no `begin`/`rescue`:
+  failures are values, so a retry is written as data (`a = attempt(x); b = if a == "" then attempt(y) else "" end`)
+  rather than control flow.
 - **Request context.** A tool body may read `client_name`, `client_version` and `protocol_version` (each a
   string or nil), `request_id` (a string), `progress_token` (a string or nil, when the client asked for
   progress) and `cancelled?` (a bool).
+- **Settings.** `setting(:name)` reads a value the server declared with `setting :name, env: "..."`, always as a
+  string, so a numeric one is parsed in the body (`setting(:port).to_i`, Ruby's rules, an error result if it does
+  not fit). It works only in a tool, prompt or resource body, not in a helper or a binding, where the value must
+  be passed in.
 - **Statements.** `progress(value, total:, message:)` reports progress (sent only when the client supplied
   a token); `log(level, message)` sends `notifications/message`; `hide_tool(:name)` and `show_tool(:name)`
   change the advertised tool list — clients get `notifications/tools/list_changed`, a hidden tool leaves

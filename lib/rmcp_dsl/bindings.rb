@@ -12,7 +12,7 @@ module RmcpDsl
   # The compiler only PARSES these files with Prism (it never runs them). See DESIGN.md.
   module Bindings
     SCALARS = { "String" => :string, "Float" => :f64, "I32" => :i32, "I64" => :i64, "T::Boolean" => :bool }.freeze
-    LISTS = { "T::Array[String]" => :strs, "T::Array[I64]" => :i64s }.freeze
+    LISTS = { "T::Array[String]" => :strs, "T::Array[I64]" => :i64s, "T::Array[Float]" => :f64s }.freeze
     TYPES = SCALARS.merge(LISTS).freeze
 
     Fn = Struct.new(:name, :params, :returns, :rust, :body, :node, :no_reference, :async, keyword_init: true)
@@ -20,7 +20,7 @@ module RmcpDsl
     # A type the binding owns: Json::Value, the Rust type behind it, and whether it may cross the wire.
     Opaque = Struct.new(:name, :rust, :wire, :node, keyword_init: true)
 
-    BindingFile = Struct.new(:name, :module_name, :path, :crates, :fns, :examples, :types, keyword_init: true) do
+    BindingFile = Struct.new(:name, :module_name, :path, :source, :crates, :fns, :examples, :types, keyword_init: true) do
       # heck_snake_case for Heck.snake_case: the Rust function the wrapper becomes.
       # A name ending in ? becomes _p: Html.valid_selector? is html_valid_selector_p.
       def wrapper(fn) = "#{module_name.gsub(/([a-z0-9])([A-Z])/, '\1_\2').downcase}_#{fn.name.sub(/\?\z/, '_p')}"
@@ -39,7 +39,7 @@ module RmcpDsl
       raise CompileError, "binding name `#{name}` must be snake_case" unless name.to_s.match?(SNAKE)
 
       path = File.join(root, "#{name}.rb")
-      unless File.file?(path)
+      unless File.file?(path) || Lsp::Sources[path]
         where = File.directory?(root) ? "#{root} has no #{name}.rb" : "there is no bindings/ folder next to the DSL file (expected #{root})"
         raise CompileError, "no binding named #{name}: #{where}; use_bindings :#{name} loads bindings/#{name}.rb from the same directory as the file that uses it"
       end
@@ -56,7 +56,8 @@ module RmcpDsl
       end
 
       def parse
-        res = Prism.parse_file(@path)
+        text = Lsp::Sources[@path] || File.read(@path, encoding: "UTF-8")
+        res = Prism.parse(text)
         unless res.errors.empty?
           raise CompileError, res.errors.map { |e|
             "#{@path}:#{e.location.start_line}:#{e.location.start_column + 1}: syntax error: #{e.message}"
@@ -66,7 +67,7 @@ module RmcpDsl
         mods = top.grep(Prism::ModuleNode)
         bad(top.first || res.value, "a binding file must define exactly one module and nothing else") unless mods.size == 1 && top.size == 1
         mod = mods.first
-        file = BindingFile.new(name: @name, module_name: mod.constant_path.slice, path: @path,
+        file = BindingFile.new(name: @name, module_name: mod.constant_path.slice, path: @path, source: text,
                                crates: [], fns: {}, examples: [], types: {})
         @file = file
         state = {}
