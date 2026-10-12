@@ -9,7 +9,7 @@ module RmcpDsl
       # message: text without the "FILE:LINE:COL:" prefix. end_col is 1-based exclusive, on the same line.
       Diagnostic = Struct.new(:line, :col, :end_col, :message, :suggestions, keyword_init: true)
 
-      attr_reader :path, :text, :lines, :types, :diagnostics
+      attr_reader :path, :text, :lines, :types, :diagnostics, :files
 
       # `types` entries are hashes with symbol keys: line, col, end_line, end_col, kind ("parameter", "local",
       # "expression", "field", "helper" or "output"), type (a display string like "T.nilable(String)") and
@@ -20,9 +20,11 @@ module RmcpDsl
         @text = text
         @lines = text.split("\n", -1)
         @diagnostics = []
+        @files = [] # the `file` declarations of a file that compiled, for go-to-definition and entry completion
         collector = TypeNames::Collector.new(path)
         begin
-          Sources.with(path, text) { Reader.new(path, types: collector).read } # the editor's text, not the file on disk
+          ir = Sources.with(path, text) { Reader.new(path, types: collector).read } # the editor's text, not the file on disk
+          @files = ir["files"].to_a
         rescue CompileError => e
           @diagnostics = parse_errors(e)
         rescue StandardError => e # a compiler bug must not take the editor down

@@ -1,4 +1,4 @@
-# expect: applies to :string, :i32, :i64, :f64 and :bool fields
+# expect: applies to :string, :i32, :i64, :f64, :bool and :*_list fields
 server "refuse", version: "0.1.0" do
   use_bindings :json
   params :P do

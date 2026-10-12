@@ -106,4 +106,32 @@ class TestLspBindingBuffer < Minitest::Test
       assert_empty latest.dig("params", "diagnostics"), "the DSL should be re-analysed after its binding changed"
     end
   end
+
+  # A binding that is not open changes on disk (the editor saved it, or another tool wrote it). The editor
+  # says so with workspace/didChangeWatchedFiles, and the open DSL must be re-analysed against the new
+  # bytes rather than keep the diagnostic the old ones gave (rmcp-for-blender gap #9). The disk write has
+  # to land between two messages, so the server is driven a notification at a time.
+  def test_a_binding_changed_on_disk_refreshes_the_dsl
+    Dir.mktmpdir do |raw|
+      dir = File.realpath(raw)
+      FileUtils.mkdir_p(File.join(dir, "bindings"))
+      dsl = File.join(dir, "s.rmcp.rb")
+      bpath = File.join(dir, "bindings", "orphan.rb")
+      File.write(dsl, DSL)
+      File.write(bpath, binding("I64", "1"))
+
+      out = StringIO.new
+      server = RmcpDsl::Lsp::Server.new(StringIO.new(""), out)
+      server.send(:notify, "textDocument/didOpen",
+                  { "textDocument" => { "uri" => uri_for(dsl), "languageId" => "ruby", "version" => 1, "text" => DSL } })
+      File.write(bpath, binding("String", '"v"'))
+      server.send(:notify, "workspace/didChangeWatchedFiles", { "changes" => [{ "uri" => uri_for(bpath), "type" => 2 }] })
+
+      msgs = out.string.scan(/Content-Length: \d+\r\n\r\n(\{.*?\})(?=Content-Length|\z)/m).flatten.map { |s| JSON.parse(s) }
+      pubs = msgs.select { |m| m["method"] == "textDocument/publishDiagnostics" && m.dig("params", "uri") == uri_for(dsl) }
+      assert_equal 2, pubs.size, "the DSL should be published on open and again after the disk change"
+      refute_empty pubs.first.dig("params", "diagnostics"), "the binding on disk was wrong when the DSL opened"
+      assert_empty pubs.last.dig("params", "diagnostics"), "the DSL kept the old binding's diagnostic:\n#{pubs.last.inspect}"
+    end
+  end
 end

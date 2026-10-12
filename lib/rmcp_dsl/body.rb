@@ -222,11 +222,12 @@ module RmcpDsl
       bad(n, "unsupported #{nodename(n)} as a statement (only `name = expr`, a guard clause, `progress(...)`, `log(...)`, `hide_tool(...)`, `show_tool(...)` or `.each { ... }` before the last expression)#{top_level_hint(n)}") unless n.is_a?(Prism::LocalVariableWriteNode)
       bad(n, "`#{n.name}` is already defined (no reassignment)") if env.key?(n.name)
       bad(n, "local `#{n.name}` must be snake_case and not a Rust keyword") if !n.name.to_s.match?(SNAKE) || RUST_KW.include?(n.name.to_s)
-      e, t, = expr(n.value, env)
+      e, t, = kept(n.value, expr(n.value, env))
       env[n.name] = t
       @declared << [n.name, n, "local"]
       note_decl(n.name_loc, n.name, "local", t)
-      ["let #{n.name} = #{e};"]
+      # A value such as `xs.length` carries its own parens (`(xs.len() as i64)`); rustc warns on them here.
+      ["let #{n.name} = #{unparen(e)};"]
     end
 
     # A statement that only belongs at the top level (`params`, `tool`, `field`, ...) usually means an
@@ -388,6 +389,20 @@ module RmcpDsl
 
     def wrap(r) = r[2] ? r[0] : "(#{r[0]})"
 
+    # Types whose local is cloned where Rust would move it: a branch's value, `a = b`, and the left of `||`.
+    # Ruby reads a local without consuming it, so it stays readable afterwards (gaps #17, #21, #31). Copy
+    # types need no clone; an object or opaque type may not implement Clone, so those still move.
+    CLONED_ON_MOVE = %i[string r_str strs i64s f64s json].freeze
+
+    def clone_on_move?(t) = CLONED_ON_MOVE.include?(t) || MAPS.key?(t) || (OPT.key?(t) && clone_on_move?(OPT.fetch(t)))
+
+    # r, the compiled `node`, with a clone when node is a local that this position would move.
+    def kept(node, r)
+      return r unless node.is_a?(Prism::LocalVariableReadNode) && clone_on_move?(r[1])
+
+      ["#{wrap(r)}.clone()", r[1], true]
+    end
+
     # `(x)` around a whole branch or body is redundant in Rust, and rustc warns (unused_parens).
     # Strips one outer pair only when it encloses the entire expression, ignoring string literals.
     def unparen(code)
@@ -416,6 +431,7 @@ module RmcpDsl
 
     def logic(n, env)
       l = expr(n.left, env)
+      l = kept(n.left, l) if n.is_a?(Prism::OrNode) && OPT.key?(l[1])
       # `maybe_list || []`: an empty list of the same kind as the left side.
       if n.is_a?(Prism::OrNode) && OPT.key?(l[1]) && empty_default?(OPT[l[1]], n.right)
         return ["#{wrap(l)}.unwrap_or_default()", OPT.fetch(l[1]), true]
@@ -463,7 +479,8 @@ module RmcpDsl
     # A :str branch becomes an owned String so both arms of an `if` have one Rust type.
     def branch(st, env, at)
       bad(at, "empty branch") unless st.is_a?(Prism::StatementsNode)
-      lets, e, t, = stmts(st, env.dup)
+      lets, *r = stmts(st, env.dup)
+      e, t, = kept(st.body.last, r)
       e = unparen(e)
       e, t = "#{e}.to_string()", :string if t == :str
       [lets, e, t]
@@ -516,7 +533,9 @@ module RmcpDsl
         bad(n, "blocks are only supported on map, gsub, sub, #{LIST_BLOCK.join(', ')}", word: name, from: %i[map gsub sub] + LIST_BLOCK)
       end
       return safe_nav_call(n, env) if n.safe_navigation?
-      return rust_int(n, args, env) if n.receiver.is_a?(Prism::ConstantReadNode) && n.receiver.name == :Rust
+      if n.receiver.is_a?(Prism::ConstantReadNode) && n.receiver.name == :Rust
+        return n.name == :Str ? rust_str(n, args, env) : rust_int(n, args, env)
+      end
       if n.receiver.is_a?(Prism::ConstantReadNode)
         return binding_call(n, args, env) if @bindings.key?(n.receiver.name.to_s)
 
@@ -527,6 +546,9 @@ module RmcpDsl
       return raise_call(n, args, env) if name == :raise && n.receiver.nil?
       return output_new(n, args, env) if name == :result && n.receiver.nil?
       return setting_call(n, args) if name == :setting && n.receiver.nil?
+      return file_text_call(n, args) if name == :file_text && n.receiver.nil?
+      return entry_call(n, args) if name == :entry && n.receiver.nil?
+      return entry_args_call(n, args, env) if name == :entry_args && n.receiver.nil?
       return elicit_call(n, args, env) if name == :elicit && n.receiver.nil?
       return roots_call(n, args, env) if name == :roots && n.receiver.nil?
       return sample_call(n, args, env) if name == :sample && n.receiver.nil?
@@ -554,6 +576,7 @@ module RmcpDsl
 
       recv = expr(n.receiver, env)
       bad(n, "a secret has no methods (not `#{name}`): it can only be passed to a binding or rust_fn function") if recv[1] == :secret
+      return rust_str_call(n, name, args, recv, env) if recv[1] == :r_str
       return roots_method(n, name, args, recv, env) if recv[1] == :roots_result
       return elicit_field(n, name, recv) if recv[1] == :elicit_result && args.empty?
       return struct_field(n, name, recv) if recv[1].to_s.start_with?("struct:") && args.empty?
@@ -1953,7 +1976,8 @@ module RmcpDsl
 
     # setting(:name): the value of a server setting, read from the environment when the server started. A required
     # setting is a string, an optional one a nil-able string, and a secret has the type :secret, which only a binding or
-    # rust_fn function may take (see the checks where a string is expected).
+    # rust_fn function may take (see the checks where a string is expected). A `type: :i64`, `:f64` or `:bool` setting
+    # has that type (nil-able when optional).
     def setting_call(node, args)
       bad(node, "setting(:name) takes the name of a setting declared with `setting :name, env: \"...\"`") unless args.size == 1 && args[0].is_a?(Prism::SymbolNode)
       unless @tool.to_s.start_with?("tool ", "prompt ", "resource ")
@@ -1965,8 +1989,127 @@ module RmcpDsl
         bad(args[0], "no setting `#{name}` is declared#{declared.empty? ? '' : " (declared: #{declared.keys.join(', ')})"}; add `setting :#{name}, env: \"...\"` to the server",
             word: name, from: declared.keys)
       (@flags["used_settings"] ||= {})[name] = true
+      if (typed = entry["type"])
+        # A typed setting was parsed at startup; its Rust value is Copy, so it is read without a clone.
+        base = typed.to_sym
+        return ["settings().#{name}", entry["optional"] ? OPT_OF.fetch(base) : base, true]
+      end
       type = entry["secret"] ? :secret : (entry["optional"] ? :ostr : :string)
       ["settings().#{name}.clone()", type, true]
+    end
+
+    # file_text(:name): the text of a file declared with `file "path", as: :name`, read from disk on this call, so
+    # an edit to the file needs no rebuild. The read can fail, so the call is fallible. A helper may use it.
+    def file_text_call(node, args)
+      unless args.size == 1 && args[0].is_a?(Prism::SymbolNode)
+        bad(node, "file_text(:name) takes the `as:` name of a file declared with `file \"path\", as: :name`")
+      end
+      f = declared_file(args[0], "file_text")
+      (@flags["used_files"] ||= {})[f["name"]] = true
+      (@flags["file_texts"] ||= {})[f["name"]] = true # the emitter writes file_text_<name> only for these
+      @fallible = true
+      ["file_text_#{f['name']}()?", :string, true]
+    end
+
+    # entry(:file, :name): the string "name", refused unless :name is one of that file's `entries:`, so a
+    # function the server names is one the compiler found in the file.
+    def entry_call(node, args)
+      unless args.size == 2 && args.all?(Prism::SymbolNode)
+        bad(node, "entry(:file, :name) takes the file's `as:` name and one of its entries: names")
+      end
+      f = declared_file(args[0], "entry")
+      e = declared_entry(f, args[1], "entry")
+      mark_entry(f, e, node)
+      [RmcpDsl.rstr(e), :str, true]
+    end
+
+    # entry_args(:file, :name, key: value, ...): the JSON text of a call's arguments, written by the compiler from
+    # typed values (nil is null) and checked against what `def name` declares: the fields of its one TypedDict
+    # parameter, or its plain parameters. With `unchecked: %i[args]` on the file the keys and types are not checked.
+    def entry_args_call(node, args, env)
+      kw = args.last.is_a?(Prism::KeywordHashNode) ? args.last : nil
+      heads = kw ? args[0...-1] : args
+      unless heads.size == 2 && heads.all?(Prism::SymbolNode)
+        bad(node, "entry_args(:file, :name, key: value, ...) takes the file's `as:` name, one of its entries: names and the arguments as keywords")
+      end
+      f = declared_file(heads[0], "entry_args")
+      e = declared_entry(f, heads[1], "entry_args")
+      mark_entry(f, e, node)
+      (@flags["built_entries"] ||= {})["#{f['name']}.#{e}"] = true
+      sig = f["sigs"].fetch(e)
+      call = "entry_args(:#{f['name']}, :#{e})"
+      fields = sig["checked"] ? sig["fields"] : nil
+      given = {}
+      pairs = (kw ? kw.elements : []).map do |el|
+        unless el.is_a?(Prism::AssocNode) && el.key.is_a?(Prism::SymbolNode) && !el.value.is_a?(Prism::ImplicitNode)
+          bad(el, "#{call} takes `key: value` arguments")
+        end
+        key = el.key.unescaped
+        bad(el, "#{call}: duplicate `#{key}:`") if given.key?(key)
+        given[key] = true
+        field = fields&.find { |x| x["name"] == key }
+        if fields && field.nil?
+          names = fields.map { |x| x["name"] }
+          bad(el.key, "#{call}: `#{key}` is not a field of #{sig['of']} (#{names.join(', ')})", word: key, from: names)
+        end
+        "#{RmcpDsl.rstr(key)}: #{entry_arg_value(el.value, field, call, sig['of'], env)}"
+      end
+      fields&.each do |x|
+        next if !x["required"] || given.key?(x["name"])
+
+        bad(node, "#{call}: #{sig['of']} requires `#{x['name']}` (#{f['path']}:#{x['line']})")
+      end
+      ["rmcp::serde_json::json!({#{pairs.join(', ')}}).to_string()", :string, true]
+    end
+
+    # One entry_args value, as an expression json! serialises by reference (so a local is not moved). With a
+    # field, its type must match the field's annotation, and a nil-able value needs a field that allows None.
+    def entry_arg_value(vnode, field, call, of, env)
+      nil_ok = field.nil? || field["nilable"]
+      return "rmcp::serde_json::Value::Null" if vnode.is_a?(Prism::NilNode) && nil_ok
+
+      r = vnode.is_a?(Prism::NilNode) ? ["None", :nil, true] : expr(vnode, env)
+      t = RINT.fetch(r[1], r[1])
+      bad(vnode, "#{call}: a secret cannot be sent as an argument; pass it to a binding or rust_fn function") if t == :secret
+      return "(#{wrap(r)})" unless field
+
+      key = field["name"]
+      if t == :nil || (OPT.key?(t) && !nil_ok)
+        bad(vnode, "#{call}: `#{key}` may be nil here, but #{of} declares `#{key}: #{field['text']}`; use `|| default`")
+      end
+      inner = OPT.key?(t) ? OPT.fetch(t) : t
+      want = field["base"].to_sym
+      ok = case want
+           when :string then %i[str string].include?(inner)
+           when :int then %i[int i32 i64].include?(inner)
+           when :f64 then %i[f64 int i32 i64].include?(inner)
+           else inner == want
+           end
+      bad(vnode, "#{call}: `#{key}` is `#{key}: #{field['text']}` in #{of}, got #{TypeNames.display(r[1])}") unless ok
+      "(#{wrap(r)})"
+    end
+
+    # The `file` a call names, refused with the declared names when there is none.
+    def declared_file(sym, call)
+      name = sym.unescaped
+      files = @flags["files"] || {}
+      files[name] or
+        bad(sym, "#{call}(:#{name}): no file has as: :#{name}#{files.empty? ? "; declare it with `file \"path\", as: :#{name}`" : " (declared: #{files.keys.join(', ')})"}",
+            word: name, from: files.keys)
+    end
+
+    def declared_entry(f, sym, call)
+      e = sym.unescaped
+      return e if f["entries"].include?(e)
+
+      listed = f["entries"].empty? ? "it lists none; add entries: %i[#{e}] to the file" : f["entries"].join(", ")
+      bad(sym, "#{call}(:#{f['name']}, :#{e}): not in the entries of :#{f['name']} (#{listed})", word: e, from: f["entries"])
+    end
+
+    # Records that a body named an entry; the first call's node is kept for W-FILE-ARGS-UNCHECKED.
+    def mark_entry(f, e, node)
+      (@flags["used_files"] ||= {})[f["name"]] = true
+      (@flags["used_entries"] ||= {})["#{f['name']}.#{e}"] ||= node
     end
 
     # `progress` as a statement in a tool body: report how far along the call is. Only a tool body may send
@@ -2311,6 +2454,8 @@ module RmcpDsl
       parts = args.zip(fn.params).map do |arg, (pname, ptype)|
         r = expr(arg, env)
         rt = RINT.fetch(r[1], r[1])
+        next nilable_arg(arg, r, rt, ptype, "#{file.module_name}.#{fn.name}: argument `#{pname}`") if OPT.key?(ptype)
+
         ok = (ptype == :string && %i[string str secret].include?(rt)) || rt == ptype || (rt == :int && INTS.include?(ptype))
         bad(arg, "#{file.module_name}.#{fn.name}: argument `#{pname}` should be #{TypeNames.display(ptype)}, got #{TypeNames.display(rt)}") unless ok
         %i[string strs i64s].include?(ptype) || opaque?(ptype) ? "&#{wrap(r)}" : wrap(r)
@@ -2324,6 +2469,19 @@ module RmcpDsl
         call = "#{call}.await"
       end
       [call, fn.returns, true]
+    end
+
+    # An argument for a T.nilable binding parameter, which the wrapper takes as an owned Option: a nil-able value
+    # of that type passes as it is, nil as None, and a plain value of the inner type as Some(...). A local is
+    # cloned (`kept`), since passing it would move it and Ruby lets it be read again.
+    def nilable_arg(arg, r, rt, ptype, label)
+      return "None" if rt == :nil
+      return wrap(kept(arg, r)) if rt == ptype
+
+      inner = OPT.fetch(ptype)
+      fits = coerce(wrap(kept(arg, r)), rt, inner) or
+        bad(arg, "#{label} should be #{TypeNames.display(ptype)} (a value or nil), got #{TypeNames.display(rt)}")
+      "Some(#{fits})"
     end
 
     # A binding method written in Ruby (no rust template): the Ruby body IS the implementation.
@@ -2348,12 +2506,55 @@ module RmcpDsl
     # Rust::Int32(x) / Rust::Int64(x): mark an integer as "treat this like Rust".
     def rust_int(node, args, env)
       base = RUST_INTS[node.name] or
-        bad(node, "unknown Rust type `Rust::#{node.name}` (known: #{RUST_INTS.keys.map { |k| "Rust::#{k}" }.join(', ')})", word: node.name, from: RUST_INTS.keys)
+        bad(node, "unknown Rust type `Rust::#{node.name}` (known: #{(RUST_INTS.keys + [:Str]).map { |k| "Rust::#{k}" }.join(', ')})", word: node.name, from: RUST_INTS.keys + [:Str])
       bad(node, "Rust::#{node.name} takes exactly one integer") unless args.size == 1
       r = expr(args[0], env)
       rb = RINT.fetch(r[1], r[1])
       bad(args[0], "Rust::#{node.name} wraps an #{base} value, got #{rb}") unless rb == base || rb == :int
       [wrap(r), RINT_OF.fetch(base), true]
+    end
+
+    # Rust::Str(s): a string with Rust `str` behaviour (type :r_str, always an owned String in the Rust code).
+    # Its methods are Rust's, named as Rust names them; `to_s` leaves it for a plain string.
+    # Method => number of arguments. Ruby's String methods are untouched (`strip` there is not `trim`).
+    RUST_STR_METHODS = { trim: 0, strip: 0, to_lowercase: 0, to_uppercase: 0, to_s: 0, len: 0, lines: 0,
+                         split: 1, contains: 1, starts_with?: 1, replace: 2 }.freeze
+
+    def rust_str(node, args, env)
+      bad(node, "Rust::Str takes exactly one string") unless args.size == 1
+      r = expr(args[0], env)
+      bad(args[0], "Rust::Str wraps a string, got #{TypeNames.display(r[1])}") unless %i[str string].include?(r[1])
+      ["#{wrap(r)}.to_string()", :r_str, true]
+    end
+
+    # A method on a Rust::Str: Rust's str method, spelled out. Results that are strings stay :r_str.
+    def rust_str_call(node, name, args, recv, env)
+      want = RUST_STR_METHODS[name]
+      unless want
+        bad(node, "unsupported method `#{name}` on Rust::Str (allowed: #{RUST_STR_METHODS.keys.join(', ')})",
+            word: name, from: RUST_STR_METHODS.keys)
+      end
+      bad(node, "Rust::Str `#{name}` takes #{want} argument#{want == 1 ? '' : 's'}, got #{args.size}") unless args.size == want
+      s = wrap(recv)
+      pats = args.map do |a|
+        v = expr(a, env)
+        bad(a, "Rust::Str `#{name}` takes strings, got #{TypeNames.display(v[1])}") unless %i[str string].include?(v[1])
+        v[1] == :str ? v[0] : "&#{wrap(v)}"
+      end
+      case name
+      when :trim then ["#{s}.trim().to_string()", :r_str, true]
+      when :strip
+        Notify.add(@path, node, "N-STR-STRIP-RUST", "Rust::Str#strip uses Rust trim() (Unicode whitespace, including NBSP; NUL is not stripped)")
+        ["#{s}.trim().to_string()", :r_str, true]
+      when :to_lowercase, :to_uppercase then ["#{s}.#{name}()", :r_str, true]
+      when :to_s then ["#{s}.to_string()", :string, true]
+      when :len then ["(#{s}.len() as i64)", :i64, true]
+      when :lines then ["#{s}.lines().map(|__l| __l.to_string()).collect::<Vec<String>>()", :strs, true]
+      when :split then ["#{s}.split(#{pats[0]}).map(|__p| __p.to_string()).collect::<Vec<String>>()", :strs, true]
+      when :contains then ["#{s}.contains(#{pats[0]})", :bool, true]
+      when :starts_with? then ["#{s}.starts_with(#{pats[0]})", :bool, true]
+      else ["#{s}.replace(#{pats[0]}, #{pats[1]})", :r_str, true]
+      end
     end
 
     # An async function may only be awaited where there is an async context: a tool, helper, prompt or

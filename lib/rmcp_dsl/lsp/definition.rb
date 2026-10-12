@@ -6,6 +6,7 @@ module RmcpDsl
     #   - a CamelCase symbol (params: :Name, output: :Name, field :x, :Name, result(:Name, ...)) -> the name token of
     #     the params or output declaration
     #   - a helper call, name(args) -> the helper's name in `helper :name`
+    #   - the entry in entry(:file, :name) or entry_args(:file, :name, ...) -> its `def` line in that file
     # Anything else, and a name nothing declares, answers nil.
     module Definition
       module_function
@@ -21,6 +22,9 @@ module RmcpDsl
         first, last = word
         name = bytes[first...last].force_encoding(Encoding::UTF_8)
         before = first.positive? ? bytes[first - 1] : ""
+        entry = entry_location(analysis, bytes[0...first].force_encoding(Encoding::UTF_8), name)
+        return entry if entry
+
         span =
           if before == ":" && !(first > 1 && bytes[first - 2] == ":") && name.match?(/\A[A-Z]/)
             type_span(analysis, name)
@@ -85,6 +89,17 @@ module RmcpDsl
         found = text.match(/helper\s+:(#{Regexp.escape(name)})(?![A-Za-z0-9_])/n, decl[:col] - 1)
         found ? [decl[:line], found.begin(1) + 1, found.end(1) + 1] : name_span(analysis, decl)
       end
+
+      # The entry name in entry(:file, :name) or entry_args(:file, :name, ...) -> the `def` line in that file.
+      def entry_location(analysis, before, name)
+        m = before.match(/\bentry(?:_args)?\(\s*:(\w+)\s*,\s*:\z/) or return nil
+        file = analysis.files.find { |f| f["name"] == m[1] } or return nil
+        sig = file["sigs"][name] or return nil
+        at = { "line" => sig["line"] - 1, "character" => 0 }
+        { "uri" => file_uri(file["real"]), "range" => { "start" => at, "end" => at } }
+      end
+
+      def file_uri(path) = "file://#{path.b.gsub(%r{[^A-Za-z0-9\-._~/]}n) { |c| format('%%%02X', c.ord) }}"
 
       def range(analysis, line, first, last)
         text = analysis.line_text(line)

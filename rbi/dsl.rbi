@@ -20,8 +20,8 @@ class ServerScope
   sig { params(name: Symbol, uri: String, description: T.nilable(String), mime_type: T.nilable(String), title: T.nilable(String), icon: T.nilable(String), audience: T.nilable(T::Array[String]), priority: T.nilable(T.any(Integer, Float)), params: T.nilable(Symbol), meta: T.nilable(T::Hash[String, T.untyped]), size: T.nilable(Integer), blk: T.proc.bind(ResourceScope).void).void }
   def resource(name, uri:, description: nil, mime_type: nil, title: nil, icon: nil, audience: nil, priority: nil, params: nil, meta: nil, size: nil, &blk); end
 
-  sig { params(kind: Symbol, port: T.nilable(Integer), auth_setting: T.nilable(Symbol), oauth_issuer: T.nilable(Symbol), oauth_audience: T.nilable(Symbol), oauth_resource: T.nilable(Symbol)).void }
-  def transport(kind, port: nil, auth_setting: nil, oauth_issuer: nil, oauth_audience: nil, oauth_resource: nil); end
+  sig { params(kind: Symbol, port: T.nilable(Integer), bind: T.nilable(String), allowed_hosts: T.nilable(T::Array[String]), allowed_origins: T.nilable(T::Array[String]), json_response: T.nilable(T::Boolean), stateless: T.nilable(T::Boolean), sse_keep_alive: T.nilable(Integer), sse_retry: T.nilable(Integer), max_body_bytes: T.nilable(Integer), auth_setting: T.nilable(Symbol), oauth_issuer: T.nilable(Symbol), oauth_audience: T.nilable(Symbol), oauth_resource: T.nilable(Symbol)).void }
+  def transport(kind, port: nil, bind: nil, allowed_hosts: nil, allowed_origins: nil, json_response: nil, stateless: nil, sse_keep_alive: nil, sse_retry: nil, max_body_bytes: nil, auth_setting: nil, oauth_issuer: nil, oauth_audience: nil, oauth_resource: nil); end
 
   sig { params(name: Symbol).void }
   def feature(name); end
@@ -38,14 +38,17 @@ class ServerScope
   sig { params(name: Symbol).void }
   def use_bindings(name); end
 
-  sig { params(name: Symbol, env: String, description: T.nilable(String), default: T.nilable(String), optional: T.nilable(T::Boolean), secret: T.nilable(T::Boolean)).void }
-  def setting(name, env:, description: nil, default: nil, optional: nil, secret: nil); end
+  sig { params(name: Symbol, env: String, description: T.nilable(String), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), optional: T.nilable(T::Boolean), secret: T.nilable(T::Boolean), type: T.nilable(Symbol)).void }
+  def setting(name, env:, description: nil, default: nil, optional: nil, secret: nil, type: nil); end
 
   sig { params(file: String, base_url: T.nilable(Symbol), auth_setting: T.nilable(Symbol), auth_header: T.nilable(String), auth_scheme: T.nilable(String), include_tags: T.nilable(T::Array[String]), exclude: T.nilable(T::Array[String])).void }
   def openapi(file, base_url: nil, auth_setting: nil, auth_header: nil, auth_scheme: nil, include_tags: nil, exclude: nil); end
 
   sig { params(path: String, as: Symbol, uses: T.nilable(Symbol)).void }
   def rust_file(path, as:, uses: nil); end
+
+  sig { params(path: String, as: Symbol, env: T.nilable(String), entries: T.nilable(T::Array[Symbol]), unchecked: T.nilable(T::Array[Symbol])).void }
+  def file(path, as:, env: nil, entries: nil, unchecked: nil); end
 
   sig { params(name: Symbol, program: String, args: T::Array[Symbol], returns: Symbol, argv: T.nilable(T::Array[String]), pass: T.nilable(Symbol), async: T.nilable(T::Boolean)).void }
   def cmd_fn(name, program:, args:, returns:, argv: nil, pass: nil, async: nil); end
@@ -55,10 +58,19 @@ class ServerScope
 
   sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }
   def rust(name, *args); end
+
+  sig { params(name: Symbol).returns(String) }
+  def file_text(name); end
+
+  sig { params(file: Symbol, name: Symbol).returns(String) }
+  def entry(file, name); end
+
+  sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }
+  def entry_args(file, name, **args); end
 end
 
 class ParamsScope
-  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
+  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean, T::Array[T.any(String, Integer, Float)])), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
   def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, exclusive_min: nil, exclusive_max: nil, multiple_of: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil, complete: nil); end
 
   sig { params(type: Symbol).returns(Symbol) }
@@ -69,7 +81,7 @@ class ParamsScope
 end
 
 class OutputScope
-  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
+  sig { params(name: Symbol, type: T.any(Symbol, T.class_of(RmcpDsl::Opaque)), description: T.nilable(String), optional: T.nilable(T::Boolean), default: T.nilable(T.any(String, Integer, Float, T::Boolean, T::Array[T.any(String, Integer, Float)])), min: T.nilable(T.any(Integer, Float)), max: T.nilable(T.any(Integer, Float)), exclusive_min: T.nilable(T.any(Integer, Float)), exclusive_max: T.nilable(T.any(Integer, Float)), multiple_of: T.nilable(T.any(Integer, Float)), min_length: T.nilable(Integer), max_length: T.nilable(Integer), pattern: T.nilable(String), enum: T.nilable(T::Array[String]), format: T.nilable(Symbol), min_items: T.nilable(Integer), max_items: T.nilable(Integer), complete: T.nilable(Symbol)).void }
   def field(name, type, description: nil, optional: nil, default: nil, min: nil, max: nil, exclusive_min: nil, exclusive_max: nil, multiple_of: nil, min_length: nil, max_length: nil, pattern: nil, enum: nil, format: nil, min_items: nil, max_items: nil, complete: nil); end
 
   sig { params(type: Symbol).returns(Symbol) }
@@ -91,6 +103,15 @@ class ToolScope
 
   sig { params(name: Symbol).returns(T.untyped) }
   def setting(name); end
+
+  sig { params(name: Symbol).returns(String) }
+  def file_text(name); end
+
+  sig { params(file: Symbol, name: Symbol).returns(String) }
+  def entry(file, name); end
+
+  sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }
+  def entry_args(file, name, **args); end
 
   sig { returns(T.nilable(String)) }
   def client_name; end
@@ -169,6 +190,15 @@ class PromptScope
   sig { params(name: Symbol).returns(T.untyped) }
   def setting(name); end
 
+  sig { params(name: Symbol).returns(String) }
+  def file_text(name); end
+
+  sig { params(file: Symbol, name: Symbol).returns(String) }
+  def entry(file, name); end
+
+  sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }
+  def entry_args(file, name, **args); end
+
   sig { params(text: String, audience: T.nilable(T::Array[Symbol]), priority: T.nilable(T.any(Integer, Float))).returns(ContentBlock) }
   def text(text, audience: nil, priority: nil); end
 
@@ -204,6 +234,15 @@ class ResourceScope
   sig { params(name: Symbol).returns(T.untyped) }
   def setting(name); end
 
+  sig { params(name: Symbol).returns(String) }
+  def file_text(name); end
+
+  sig { params(file: Symbol, name: Symbol).returns(String) }
+  def entry(file, name); end
+
+  sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }
+  def entry_args(file, name, **args); end
+
   sig { params(text: String, uri: T.nilable(String), mime_type: T.nilable(String)).returns(ResourceContents) }
   def text(text, uri: nil, mime_type: nil); end
 
@@ -226,6 +265,45 @@ module Rust
 
   sig { params(value: Integer).returns(Integer) }
   def self.Int64(value); end
+
+  sig { params(value: String).returns(Rust::Str) }
+  def self.Str(value); end
+
+  # A string with Rust `str` behaviour; to_s leaves it.
+  class Str
+    sig { returns(Rust::Str) }
+    def trim; end
+
+    sig { returns(Rust::Str) }
+    def strip; end
+
+    sig { returns(Rust::Str) }
+    def to_lowercase; end
+
+    sig { returns(Rust::Str) }
+    def to_uppercase; end
+
+    sig { returns(String) }
+    def to_s; end
+
+    sig { returns(Integer) }
+    def len; end
+
+    sig { returns(T::Array[String]) }
+    def lines; end
+
+    sig { params(pat: String).returns(T::Array[String]) }
+    def split(pat); end
+
+    sig { params(pat: String).returns(T::Boolean) }
+    def contains(pat); end
+
+    sig { params(pat: String).returns(T::Boolean) }
+    def starts_with?(pat); end
+
+    sig { params(from: String, to: String).returns(Rust::Str) }
+    def replace(from, to); end
+  end
 end
 
 # The macros a binding file (bindings/*.rb) uses; the compiler reads them with Prism.

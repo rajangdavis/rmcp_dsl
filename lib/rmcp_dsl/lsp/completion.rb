@@ -189,6 +189,9 @@ module RmcpDsl
         def items
           choices = choice_items and return choices
           return [] if in_string_or_comment?
+          if (m = @prefix.match(/\bentry(?:_args)?\(\s*:(\w+)\s*,\s*:(\w*)\z/))
+            return entry_items(m[1], m[2])
+          end
 
           if (m = @prefix.match(/(&?\.)([\w?!]*)\z/)) && !@prefix.match?(/\.\.[\w?!]*\z/) && body_entry
             return filter(dot_items(m), m[2])
@@ -208,6 +211,19 @@ module RmcpDsl
         def in_string_or_comment?
           without = @prefix.gsub(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/, "0")
           without.include?("#") || without.match?(/["']/)
+        end
+
+        # The `entries:` of the file named in entry(:file, : or entry_args(:file, :. Mid-typing the document does not
+        # compile, so the `file` declaration is then read from the text (a declaration may continue after a comma).
+        def entry_items(file, typed)
+          f = @a.files.find { |x| x["name"] == file } || file_from_text(file) or return []
+          filter(f["entries"].map { |e| item(e, :function, "entry of #{f['path']}") }, typed)
+        end
+
+        def file_from_text(file)
+          joined = @a.text.gsub(/,[ \t]*\n\s*/, ", ")
+          m = joined.match(/^\s*file\s+"([^"]+)"[^\n]*\bas:\s*:#{Regexp.escape(file)}\b[^\n]*\bentries:\s*%i\[([^\]]*)\]/) or return nil
+          { "path" => m[1], "entries" => m[2].split }
         end
 
         def filter(list, typed)
@@ -811,7 +827,8 @@ module RmcpDsl
 
         KIND_TEXT = { str: "string", bool: "true or false", camel: "a params/output name", uint: "integer", num: "number",
                       strs: "list of strings", htypes: "list of types", types: "list of types", lit: "literal",
-                      snake: "snake_case name", fieldtype: "field type", helper_kw: "keyword parameters" }.freeze
+                      snake: "snake_case name", fieldtype: "field type", helper_kw: "keyword parameters",
+                      snakes: "list of snake_case names", file_checks: "list of checks" }.freeze
 
         def kw_items(call, sig, given_text, cur)
           typed = cur[/\A\s*(\w*)\z/, 1] or return []

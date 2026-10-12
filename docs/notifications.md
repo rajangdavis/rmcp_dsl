@@ -17,6 +17,8 @@ never change the generated code and never fail the build.
 | `N-OPENAPI` | an `openapi` declaration made one tool per operation, naming the file and the tools |
 | `W-OPENAPI-AUTH` | operations need authentication but no `auth_setting:` was given, so requests go out without a key |
 | `W-RUST-FN-MISSING` | a `rust_fn` names a function not found in its `rust_file` |
+| `N-FILE-UNCHECKED` | a `file` turns a check off with `unchecked:`; the notice names the checks |
+| `W-FILE-ARGS-UNCHECKED` | a body names a `file` entry with `entry(...)` but no `entry_args(...)` builds its arguments, so they are not checked |
 | `N-DEPRECATED-FEATURE` | declaring a `feature` the pinned rmcp deprecates (SEP-2577) is allowed; the emitted call is scoped with `#[allow(deprecated)]` |
 
 `N-BINDING` and `N-RUST-INJECTED` carry a short `sha256` of the bytes each input was read from, so a

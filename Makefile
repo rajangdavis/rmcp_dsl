@@ -22,6 +22,13 @@ test-ruby-rust:
 	ruby -Ilib test/test_elicitation.rb
 	ruby -Ilib test/test_roots.rb
 	ruby -Ilib test/test_sampling.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_move_clone.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_typed_settings.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_list_defaults.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_nilable_binding_params.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_rust_str.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_rust_fn_nilable.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_file_hook.rb
 
 # L3: generate Rust tests from the same catalog, then run them.
 gen-diff:

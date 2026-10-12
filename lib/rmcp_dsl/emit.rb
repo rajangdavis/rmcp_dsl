@@ -371,6 +371,7 @@ module RmcpDsl
       o.concat([*tool_visibility_runtime(ir), ""]) if tool_visibility?(ir)
       o.concat([*page_fn(ir), ""]) if paged?(ir)
       o.concat([*settings_runtime(ir), ""]) if settings?(ir)
+      o.concat(files_runtime(ir))
       o.concat([*http_auth_runtime(ir), ""]) if http_auth?(ir)
       o.concat([*http_oauth_runtime(ir), ""]) if http_oauth?(ir)
       o << "#[derive(Clone)]"
@@ -667,6 +668,9 @@ module RmcpDsl
         case f["type"]
         when "string" then "#{RmcpDsl.rstr(f['default'])}.to_string()"
         when "f64" then f["default"].to_f.to_s
+        when "string_list" then "vec![#{f['default'].map { |v| "#{RmcpDsl.rstr(v)}.to_string()" }.join(', ')}]"
+        when "i64_list" then "vec![#{f['default'].join(', ')}]"
+        when "f64_list" then "vec![#{f['default'].map { |v| v.to_f.to_s }.join(', ')}]"
         else f["default"].to_s
         end
       ["fn #{default_name(struct, f)}() -> #{field_rust_type(f['type'])} {", "    #{value}", "}"]
@@ -1314,17 +1318,28 @@ module RmcpDsl
 
     def http_bind(ir) = ir["bind"] || "127.0.0.1"
 
+    # A typed setting (`type: :i64`, `:f64`, `:bool`) is read as text like any other, then parsed with Rust's FromStr; a
+    # value that does not parse joins the unreadable-variable problems, so the server does not start on a bad number.
+    SETTING_RUST = { "i64" => "i64", "f64" => "f64", "bool" => "bool" }.freeze
+    SETTING_EXPECT = { "i64" => "an integer", "f64" => "a number", "bool" => "true or false" }.freeze
+
 # The settings the server reads from its environment: read once at startup (load_settings, called from main), then
     # read by bodies as settings().name. A value counts as set when it is not empty. A missing or unreadable variable
     # stops the server with a message that names the variables, never their values; Settings has no Debug, so a value
     # cannot be printed by accident either.
     def settings_runtime(ir)
       list = ir["settings"]
+      typed = list.any? { |s| s["type"] }
       needs_missing = list.any? { |s| !s["optional"] && !s.key?("default") }
-      fields = list.map { |s| "    #{s['name']}: #{s['optional'] ? 'Option<String>' : 'String'}," }
+      fields = list.map do |s|
+        rust = SETTING_RUST.fetch(s["type"], "String")
+        "    #{s['name']}: #{s['optional'] ? "Option<#{rust}>" : rust},"
+      end
       reads = list.flat_map do |s|
         env = RmcpDsl.rstr(s["env"])
         what = s["description"] ? "#{s['name']}: #{s['description']}" : s["name"]
+        next typed_setting_read(s, env, what) if s["type"]
+
         if s.key?("default")
           ["    let #{s['name']} = read(#{env}, &mut problems).unwrap_or_else(|| #{RmcpDsl.rstr(s['default'])}.to_string());"]
         elsif s["optional"]
@@ -1353,6 +1368,7 @@ module RmcpDsl
        "            }",
        "        }",
        "    }",
+       *(typed ? setting_parser : []),
        "    let #{needs_missing ? 'mut ' : ''}missing: Vec<&str> = Vec::new();",
        "    let mut problems: Vec<String> = Vec::new();",
        *reads,
@@ -1373,6 +1389,226 @@ module RmcpDsl
        "    }",
        "    Ok(Settings {", *build, "    })",
        "}"]
+    end
+
+    # Each `file`: file_path_<name>() is the path the `env:` variable names when it is set, else where the compiler
+    # found the file. file_text_<name>() (for a file a body reads) reads it from disk on every call, so an edit needs
+    # no rebuild, and re-checks its entries unless `unchecked: %i[each_read]`. check_files() runs at startup.
+    def files_runtime(ir)
+      files = ir["files"].to_a
+      return [] if files.empty?
+
+      out = files.any? { |f| !f["entries"].empty? } ? FILE_CHECK.lines.map(&:chomp) + [""] : []
+      files.each do |f|
+        name = f["name"]
+        built = "std::path::PathBuf::from(#{RmcpDsl.rstr(f['real'])})"
+        path = f["env"] ? "match std::env::var(#{RmcpDsl.rstr(f['env'])}) { Ok(p) if !p.is_empty() => std::path::PathBuf::from(p), _ => #{built} }" : built
+        out.push("fn file_path_#{name}() -> std::path::PathBuf {", "    #{path}", "}", "")
+        out.push("static FILE_ENTRIES_#{name.upcase}: &[FileEntry] = &[", *file_entry_rows(f), "];", "") unless f["entries"].empty?
+        next unless f["text_read"]
+
+        recheck = !f["entries"].empty? && !f["unchecked"].include?("each_read")
+        out.push("fn file_text_#{name}() -> Result<String, String> {",
+                 "    let path = file_path_#{name}();",
+                 "    let text = std::fs::read_to_string(&path).map_err(|e| format!(\"error: cannot read file `#{name}` at {}: {e}\", path.display()))?;",
+                 *(recheck ? ["    check_file_entries(#{RmcpDsl.rstr(name)}, &path, &text, FILE_ENTRIES_#{name.upcase})?;"] : []),
+                 "    Ok(text)", "}", "")
+      end
+      out.push("fn check_files() -> Result<(), String> {")
+      files.each do |f|
+        name = f["name"]
+        out.push("    {", "        let path = file_path_#{name}();",
+                 "        let #{f['entries'].empty? ? '_text' : 'text'} = std::fs::read_to_string(&path).map_err(|e| format!(\"error: cannot read file `#{name}` at {}: {e}\", path.display()))?;")
+        out << "        check_file_entries(#{RmcpDsl.rstr(name)}, &path, &text, FILE_ENTRIES_#{name.upcase})?;" unless f["entries"].empty?
+        out << "    }"
+      end
+      out.push("    Ok(())", "}", "")
+    end
+
+    def file_entry_rows(f)
+      f["entries"].map do |e|
+        sig = f["sigs"].fetch(e)
+        fields = sig["dict_lines"].map { |n, l| "(#{RmcpDsl.rstr(n)}, #{RmcpDsl.rstr(l)})" }.join(", ")
+        "    FileEntry { name: #{RmcpDsl.rstr(e)}, header: #{RmcpDsl.rstr(sig['header'])}, dict: #{RmcpDsl.rstr(sig['dict'])}, fields: &[#{fields}] },"
+      end
+    end
+
+    # The running server's re-check of a `file`'s entries, against what the compiler read (PythonSig): the `def`
+    # header and, for a TypedDict parameter, its field lines, each with comments dropped and whitespace collapsed.
+    # An empty header means the args check is off, so only the `def`'s existence is checked.
+    FILE_CHECK = <<~'RS'
+      struct FileEntry {
+          name: &'static str,
+          header: &'static str,
+          dict: &'static str,
+          fields: &'static [(&'static str, &'static str)],
+      }
+
+      fn py_norm(line: &str) -> String {
+          let mut out = String::new();
+          let mut quote: Option<char> = None;
+          for c in line.chars() {
+              match quote {
+                  Some(q) if c == q => quote = None,
+                  Some(_) => {}
+                  None if c == '"' || c == '\'' => quote = Some(c),
+                  None if c == '#' => break,
+                  None => {}
+              }
+              out.push(c);
+          }
+          out.split_whitespace().collect::<Vec<_>>().join(" ")
+      }
+
+      fn py_top_level(raw: &str) -> bool {
+          !raw.starts_with(' ') && !raw.starts_with('\t')
+      }
+
+      fn py_def_header(text: &str, name: &str) -> Option<String> {
+          let lines: Vec<&str> = text.lines().collect();
+          for (i, raw) in lines.iter().enumerate() {
+              let n = py_norm(raw);
+              let rest = n.strip_prefix("async ").unwrap_or(&n);
+              let Some(after) = rest.strip_prefix("def ") else { continue };
+              if !py_top_level(raw) || !after.starts_with(name) || !after[name.len()..].trim_start().starts_with('(') {
+                  continue;
+              }
+              let mut header = Vec::new();
+              let mut depth = 0i32;
+              let mut opened = false;
+              for line in &lines[i..] {
+                  let part = py_norm(line);
+                  for c in part.chars() {
+                      match c {
+                          '(' | '[' | '{' => {
+                              depth += 1;
+                              opened = true;
+                          }
+                          ')' | ']' | '}' => depth -= 1,
+                          _ => {}
+                      }
+                  }
+                  let done = opened && depth == 0 && part.ends_with(':');
+                  header.push(part);
+                  if done {
+                      return Some(header.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
+                  }
+              }
+              return None;
+          }
+          None
+      }
+
+      fn py_dict_fields(text: &str, dict: &str) -> Option<Vec<(String, String)>> {
+          let lines: Vec<&str> = text.lines().collect();
+          let start = lines.iter().position(|raw| {
+              let n = py_norm(raw);
+              py_top_level(raw)
+                  && n.strip_prefix("class ").is_some_and(|r| r.starts_with(dict) && r[dict.len()..].trim_start().starts_with('('))
+          })?;
+          let mut out = Vec::new();
+          let mut in_doc: Option<&str> = None;
+          for raw in &lines[start + 1..] {
+              if let Some(q) = in_doc {
+                  if raw.contains(q) {
+                      in_doc = None;
+                  }
+                  continue;
+              }
+              let n = py_norm(raw);
+              if !n.is_empty() && py_top_level(raw) {
+                  break;
+              }
+              if n.is_empty() || n == "pass" {
+                  continue;
+              }
+              if let Some(q) = ["\"\"\"", "'''"].into_iter().find(|q| n.starts_with(q)) {
+                  if !(n.len() > 3 && n[3..].contains(q)) {
+                      in_doc = Some(q);
+                  }
+                  continue;
+              }
+              let field = n.split_once(':').map_or(n.as_str(), |(f, _)| f).trim().to_string();
+              out.push((field, n));
+          }
+          Some(out)
+      }
+
+      fn check_file_entries(file: &str, path: &std::path::Path, text: &str, entries: &[FileEntry]) -> Result<(), String> {
+          let at = path.display();
+          for e in entries {
+              let Some(header) = py_def_header(text, e.name) else {
+                  return Err(format!("error: {at} has no top-level `def {}(` any more, but file `{file}` lists it in entries:; restore it or rebuild the server", e.name));
+              };
+              if e.header.is_empty() {
+                  continue;
+              }
+              if header != e.header {
+                  return Err(format!("error: `def {}` in {at} changed since the server was built (was `{}`, now `{header}`); rebuild the server so its arguments are checked again", e.name, e.header));
+              }
+              if e.dict.is_empty() {
+                  continue;
+              }
+              let Some(now) = py_dict_fields(text, e.dict) else {
+                  return Err(format!("error: {at} has no `class {}(TypedDict)` any more, which `def {}` takes; restore it or rebuild the server", e.dict, e.name));
+              };
+              for (name, line) in e.fields {
+                  match now.iter().find(|(n, _)| n.as_str() == *name) {
+                      None => return Err(format!("error: {at}: field `{name}` of {} is gone; rebuild the server", e.dict)),
+                      Some((_, l)) if l.as_str() != *line => {
+                          return Err(format!("error: {at}: field `{name}` of {} changed (was `{line}`, now `{l}`); rebuild the server", e.dict));
+                      }
+                      _ => {}
+                  }
+              }
+              if let Some((n, _)) = now.iter().find(|(n, _)| !e.fields.iter().any(|(f, _)| *f == n.as_str())) {
+                  return Err(format!("error: {at}: {} has a field `{n}` the server was built without; rebuild the server", e.dict));
+              }
+          }
+          Ok(())
+      }
+    RS
+
+    # The read of one typed setting: the raw text, the missing check for a required one, then the parse.
+    def typed_setting_read(s, env, what)
+      name = s["name"]
+      parse = "parse_setting::<#{SETTING_RUST.fetch(s['type'])}>(#{env}, #{name}_raw, #{RmcpDsl.rstr(SETTING_EXPECT.fetch(s['type']))}, &mut problems)"
+      lines = ["    let #{name}_raw = read(#{env}, &mut problems);"]
+      if s.key?("default")
+        lines << "    let #{name} = #{parse}.unwrap_or(#{setting_default_rust(s)});"
+      elsif s["optional"]
+        lines << "    let #{name} = #{parse};"
+      else
+        lines.push("    if #{name}_raw.is_none() {",
+                   "        missing.push(#{RmcpDsl.rstr("  #{s['env']}  (#{what})")});",
+                   "    }",
+                   "    let #{name} = #{parse};")
+      end
+      lines
+    end
+
+    def setting_default_rust(s)
+      v = s["default"]
+      case s["type"]
+      when "f64" then Float(v).to_s
+      when "i64" then v.negative? ? "(#{v})" : v.to_s
+      else v.to_s
+      end
+    end
+
+    # parse_setting reads a typed setting's text; a failure names the variable and the kind of value it wanted, never the
+    # value itself.
+    def setting_parser
+      ["    fn parse_setting<T: std::str::FromStr>(env: &str, raw: Option<String>, expect: &str, problems: &mut Vec<String>) -> Option<T> {",
+       "        let raw = raw?;",
+       "        match raw.trim().parse::<T>() {",
+       "            Ok(value) => Some(value),",
+       "            Err(_) => {",
+       "                problems.push(format!(\"  {env} is not {expect}\"));",
+       "                None",
+       "            }",
+       "        }",
+       "    }"]
     end
 
     # `page_size:` on the server: each list is cut into pages of that many items. The cursor is opaque to clients: here
@@ -1938,6 +2174,13 @@ module RmcpDsl
                            "            std::process::exit(2);",
                            "        }",
                            "    }"] : []
+      # a `file` that is missing, or whose entries no longer match the build, stops the server before it serves
+      unless ir["files"].to_a.empty?
+        start += ["    if let Err(message) = check_files() {",
+                  "        eprintln!(\"{message}\");",
+                  "        std::process::exit(2);",
+                  "    }"]
+      end
       if http?(ir)
         return [
           "#[tokio::main]",

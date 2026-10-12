@@ -24,9 +24,9 @@ the path it looked for.
 `T.nilable(T::Array[String])`) means "does not exist" or "does not parse", and the server decides what that
 means: `Html.select(page, css) || []` to carry on, `|| raise("invalid selector")` to fail, `.nil?` to test.
 Types are `String`, `Float`, `I32`, `I64`, `T::Boolean`, `T::Array[String]`, `T::Array[I64]`,
-`T::Array[Float]`, and `T.nilable` of those as a return type. A parameter cannot be nil-able yet (only a
-return can), and a params list field cannot take `default:`, so make it `optional: true` and fold nil in the
-body (`names || []`). A binding's opaque type (`class Value < RmcpDsl::Opaque`) is owned by the module that
+`T::Array[Float]`, and `T.nilable` of those. A nil-able parameter arrives as an owned Option, and a call may
+pass `nil`, a plain value or a nil-able one. A params list field can take a `default:` list (`default: []`),
+so the body always has a list. A binding's opaque type (`class Value < RmcpDsl::Opaque`) is owned by the module that
 declares it, so a second binding cannot name it — keep the type and the functions that use it in one binding.
 `rmcp_dsl skill` explains the format with a worked example.
 
@@ -55,7 +55,9 @@ SH
 
 A `rust_fn`'s declared name is the Rust function's own name: `rust_fn :to_snake, args: [:string], returns: :string, from: :loud`
 finds `fn to_snake` inside the `loud` module (the `rust_file` with `as: :loud`), and `rust(:to_snake, ...)` is how a
-body calls it — so the declared name must match the Rust function exactly.
+body calls it — so the declared name must match the Rust function exactly. `returns:` takes the helper types, so
+`returns: :string?` (or `:i64?`, `:string_list?`, ...) declares a function returning `Option<...>`, and a body handles the
+nil as with any nil-able value (`rust(:reply, text) || "no reply"`) instead of agreeing on a sentinel like `""`.
 
 `rust "expr", async: true` on a binding method, or `rust_fn ... async: true`, declares an `async fn`: its
 `returns:`/sig is the eventual value, and a body that calls it is compiled `async fn` and awaits the result

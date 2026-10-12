@@ -162,6 +162,11 @@ module RmcpDsl
           uri = params.dig("textDocument", "uri")
           @documents.delete(uri)
           publish(uri, [], nil)
+        when "workspace/didChangeWatchedFiles"
+          # A file changed on disk without passing through an open document: a binding or rust_file the
+          # editor saved, or one another tool wrote or created. An open DSL document's analysis may have
+          # read the old bytes (or found no file), so every one is re-analysed.
+          refresh_dependents(nil) unless (params["changes"] || []).empty?
         end
       end
 
@@ -199,7 +204,8 @@ module RmcpDsl
       end
 
       # A binding or rust_file changed, so every open DSL document's cached analysis is stale: re-analyse
-      # and republish it. Only DSL documents depend on other files, so only they are refreshed.
+      # and republish it. Only DSL documents depend on other files, so only they are refreshed. A nil
+      # changed_uri (a change on disk) refreshes every one.
       def refresh_dependents(changed_uri)
         @documents.each do |uri, _doc|
           next if uri == changed_uri

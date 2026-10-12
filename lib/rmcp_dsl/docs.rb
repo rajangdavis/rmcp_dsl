@@ -27,6 +27,7 @@ module RmcpDsl
       setting: "A value the server reads from an environment variable when it starts, such as an API address or key; bodies read it with setting(:name).",
       openapi: "Makes one tool per operation of an OpenAPI 3.0 or 3.1 file beside this one, calling the API it describes; checked when compiled.",
       rust_file: "Copies a hand-written .rs file from beside the DSL file into the crate as a module that rust_fn can point at.",
+      file: "Loads a file from beside the DSL file that bodies read with file_text(:name) on each call; its Python entries are checked.",
       cmd_fn: "A function that runs a subprocess with fixed arguments and returns its output as a string; no shell is used.",
       script_fn: "A function that runs inline code in an interpreter such as python3 or ruby and returns its output as a string.",
       feature: "Declares a backend feature the server uses, such as `:logging`; a gated body built-in needs it and it advertises the capability."
@@ -46,7 +47,7 @@ module RmcpDsl
 
       %i[field description] => "What the field means; it is part of the schema the model reads, so say what a valid value is.",
       %i[field optional] => "When true the caller may leave the field out and the body sees nil; it cannot be combined with `default:`.",
-      %i[field default] => "The value used when the caller omits the field, so the body always has one; it must pass the field's other limits.",
+      %i[field default] => "The value used when the caller omits the field, within its other limits; a list field takes a literal list such as [] or [\"a\"].",
       %i[field min] => "The smallest allowed number; only for :i32, :i64 and :f64 fields, and an integer for the integer types.",
       %i[field max] => "The largest allowed number; only for :i32, :i64 and :f64 fields, and not below `min:`.",
       %i[field exclusive_min] => "The smallest allowed number, which the value must be above; only for :i32, :i64 and :f64 fields, and an integer for the integer types.",
@@ -72,8 +73,9 @@ module RmcpDsl
       %i[server page_size] => "How many tools, prompts, resources or templates one page of a list holds; clients follow nextCursor for the rest.",
       %i[setting env] => "The environment variable the value is read from; the server refuses to start when a required one is missing or empty.",
       %i[setting description] => "What the value is for, shown in the message when the server cannot start without it.",
-      %i[setting default] => "The value used when the environment variable is not set, which makes the setting not required.",
-      %i[setting optional] => "True when the server can run without the value; the body then gets a string or nil.",
+      %i[setting default] => "The value used when the environment variable is not set, which makes the setting not required; a literal of the setting's type.",
+      %i[setting optional] => "True when the server can run without the value; the body then gets the value or nil.",
+      %i[setting type] => "The value's type: :i64, :f64 or :bool, parsed when the server starts, which refuses to start on a value that does not parse. Text when left out.",
       %i[setting secret] => "True for a key or token: a body can only pass it to a binding or rust_fn function, never print or return it.",
       %i[tool input_schema] => "A JSON Schema object literal that replaces the schema made from the fields; its properties and required list are checked against them.",
       %i[openapi base_url] => "The setting that holds the API's address; without it the first server address of the document is used.",
@@ -115,7 +117,7 @@ module RmcpDsl
       %i[transport oauth_resource] => "The setting holding this server's public base URL for the protected-resource metadata; without it, http://127.0.0.1 and the port.",
       %i[transport auth_setting] => "The secret setting every request to /mcp must carry as `Authorization: Bearer ...`, or get a 401; only for :http.",
       %i[transport bind] => "The address the HTTP server binds, such as \"0.0.0.0\"; the default 127.0.0.1 is loopback-only.",
-      %i[transport allowed_hosts] => "Exact `Host` values the HTTP check accepts, such as [\"host.docker.internal\"], for a caller not on loopback.",
+      %i[transport allowed_hosts] => "Exact `Host` values the HTTP check accepts; like rmcp, the list replaces localhost, 127.0.0.1 and ::1, so list those too for local clients.",
       %i[transport allowed_origins] => "Browser `Origin` values the HTTP server accepts, such as [\"https://app.example.com\"]; an entry needs a scheme; an empty list disables the check.",
       %i[transport json_response] => "True to prefer `application/json` for a simple request and response instead of an SSE stream; only for :http.",
       %i[transport stateless] => "True to serve each request without a session (stateless mode, SEP-2567); only for `transport :http`.",
@@ -124,12 +126,17 @@ module RmcpDsl
       %i[transport max_body_bytes] => "The largest POST request body, in bytes, the HTTP server accepts; only for `transport :http`.",
 
       %i[rust_fn args] => "The argument types in order, such as [:string, :i32].",
-      %i[rust_fn returns] => "The result type of the Rust function.",
+      %i[rust_fn returns] => "The result type of the Rust function, as for a helper: `:string?` is an Option<String> the body must handle.",
       %i[rust_fn from] => "The `as:` name of the rust_file module that holds the function; leave it out for a function from rust_item.",
       %i[rust_fn async] => "True when the Rust function is async; a body that calls it awaits the eventual value.",
 
       %i[rust_file as] => "The module name the file gets in the crate, and the name `from:` refers to; it cannot be main or tests.",
       %i[rust_file uses] => "Set to :subprocess when the module starts subprocesses, so the generated crate includes the subprocess helper.",
+
+      %i[file as] => "The name bodies use for the file, as in file_text(:name), entry(:name, :fn) and entry_args(:name, :fn, ...).",
+      %i[file env] => "An environment variable that, when set, gives the path the running server reads the file from.",
+      %i[file entries] => "The Python functions bodies name with entry(...); each needs a top-level, fully annotated `def` in the file.",
+      %i[file unchecked] => "Checks to turn off: :each_read (the running server re-checking entries) or :args (the entry_args comparison).",
 
       %i[cmd_fn program] => "The program to run, such as tr; only letters, digits and . _ + - / are allowed, and no shell is involved.",
       %i[cmd_fn argv] => "Fixed command line arguments placed before the call's own arguments, one list entry per argument.",

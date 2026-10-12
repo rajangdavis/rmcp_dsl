@@ -20,6 +20,9 @@ module RmcpDsl
                    string?: :ostr, i32?: :oi32, i64?: :oi64, f64?: :of64, bool?: :obool,
                    string_list?: :ostrs, i64_list?: :oi64s, f64_list?: :of64s }.freeze
 
+  # The checks a `file` declaration may turn off with `unchecked:`; the path and entry checks always run.
+  FILE_CHECKS = %i[each_read args].freeze
+
   SNAKE  = /\A[a-z][a-z0-9_]*\z/
   CAMEL  = /\A[A-Z][A-Za-z0-9]*\z/
   SEMVER = /\A\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\z/
@@ -35,7 +38,7 @@ module RmcpDsl
   #   pos:   positional argument kinds, in order
   #   kw:    keyword => [kind, required]
   #   block: nil (no block), :decls (only DSL calls inside) or :body (Ruby subset)
-  # Kinds: :lit (a string, number or true/false literal), :fieldtype (a field type symbol), :bool (true or false), :num (integer or float literal), :uint (non-negative integer literal),
+  # Kinds: :lit (a string, number or true/false literal), :default (a :lit, or a flat array of them), :fieldtype (a field type symbol), :bool (true or false), :num (integer or float literal), :uint (non-negative integer literal),
   #        :str (plain string literal), :snake / :camel (symbol literal naming a
   #        snake_case / CamelCase non-keyword identifier), or an Array of allowed symbol literals.
   SIG = {
@@ -49,7 +52,7 @@ module RmcpDsl
     output: { in: :server, names: [:name], pos: [:camel], kw: {}, block: :decls },
     field: {
       in: %i[params output], names: %i[name type], pos: %i[snake fieldtype],
-      kw: { description: [:str, false], optional: [:bool, false], default: [:lit, false],
+      kw: { description: [:str, false], optional: [:bool, false], default: [:default, false],
             min: [:num, false], max: [:num, false], exclusive_min: [:num, false], exclusive_max: [:num, false],
             multiple_of: [:num, false], min_length: [:uint, false], max_length: [:uint, false],
             pattern: [:str, false], enum: [:strs, false], format: [FORMATS, false],
@@ -90,11 +93,12 @@ module RmcpDsl
     # `log(...)` may be used, advertises the capability, and scopes the generated `#[allow(deprecated)]`.
     feature: { in: :server, names: [:name], pos: [Features::NAMES], kw: {}, block: nil },
     # Tier 2 (SKETCH.md): injected Rust. rust_fn declares the signature of a function that
-    # lives in a rust_item block, so bodies can call it as rust(:name, args) and be type-checked.
+    # lives in a rust_item block, so bodies can call it as rust(:name, args) and be type-checked. Its result
+    # takes the helper types, so `returns: :string?` is an Option<String> that the body must handle as nil-able.
     rust_crate: { in: :server, names: [:crate, :version], pos: [:str, :str], kw: {}, block: nil },
     rust_item: { in: :server, names: [:code], pos: [:str], kw: {}, block: nil },
     rust_fn: { in: :server, names: [:name], pos: [:snake],
-               kw: { args: [:types, true], returns: [TYPES.keys, true], from: [:snake, false], async: [:bool, false] }, block: nil },
+               kw: { args: [:types, true], returns: [HELPER_TYPES.keys, true], from: [:snake, false], async: [:bool, false] }, block: nil },
     # rust_file loads a hand-written .rs file that lives next to the DSL file as module src/<as>.rs;
     # `from:` on rust_fn says the function is in that module.
     # Load a trusted binding (bindings/<name>.rb); bodies then call Module.method(...) as plain Ruby.
@@ -102,7 +106,8 @@ module RmcpDsl
     # A value the server reads from its environment when it starts: setting(:name) in a body.
     setting: {
       in: :server, names: [:name], pos: [:snake],
-      kw: { env: [:str, true], description: [:str, false], default: [:str, false], optional: [:bool, false], secret: [:bool, false] },
+      kw: { env: [:str, true], description: [:str, false], default: [:lit, false], optional: [:bool, false], secret: [:bool, false],
+            type: [%i[string i64 f64 bool], false] },
       block: nil
     },
     # Tools made from an OpenAPI document, one per operation, read when the server is compiled.
@@ -113,6 +118,10 @@ module RmcpDsl
       block: nil
     },
     rust_file: { in: :server, names: [:path], pos: [:str], kw: { as: [:snake, true], uses: [[:subprocess], false] }, block: nil },
+    # file "python/x.py", as: :x loads any file beside the DSL file; the server reads it from disk on each call.
+    # `entries:` names the Python functions it calls, checked against the file (docs/specs/source_hook.md).
+    file: { in: :server, names: [:path], pos: [:str],
+            kw: { as: [:snake, true], env: [:str, false], entries: [:snakes, false], unchecked: [:file_checks, false] }, block: nil },
     # Subprocess escape hatches (any language). Arguments are separate argv entries or stdin,
     # never shell text. Called from bodies as rust(:name, ...) like any rust_fn.
     cmd_fn: { in: :server, names: [:name], pos: [:snake],

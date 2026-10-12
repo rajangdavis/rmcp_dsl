@@ -15,6 +15,8 @@ module RmcpDsl
               "W-STR-CAPITALIZE" => :warning,
               "N-RUST-INJECTED" => :notice,
               "W-RUST-FN-MISSING" => :warning,
+              "N-FILE-UNCHECKED" => :notice,
+              "W-FILE-ARGS-UNCHECKED" => :warning,
               "N-EXEC-INJECTED" => :notice,
               "N-BINDING" => :notice,
               "N-OPENAPI" => :notice,

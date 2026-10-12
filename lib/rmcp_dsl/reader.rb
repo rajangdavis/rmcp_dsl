@@ -18,11 +18,25 @@ module RmcpDsl
       text = Lsp::Sources[path] # an editor's unsaved text, when the language server is compiling it
       res = text ? Prism.parse(text) : Prism.parse_file(path)
       unless res.errors.empty?
+        src = text || File.read(path, encoding: "UTF-8")
         raise CompileError, res.errors.map { |e|
-          "#{path}:#{e.location.start_line}:#{e.location.start_column + 1}: syntax error: #{e.message}"
+          "#{path}:#{e.location.start_line}:#{e.location.start_column + 1}: syntax error: #{e.message}#{heredoc_do_hint(e, src)}"
         }.join("\n")
       end
       @program = res.value
+    end
+
+    HEREDOC_OPENER = /<<[~-]?(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/
+
+    # A heredoc as a keyword value (instructions: <<~TXT) with the block's `do` written after the terminator is
+    # Ruby's own syntax error, and its message names only the stray `do`. The block opens on the line that starts
+    # the heredoc, so say so when a heredoc opens above that `do` (rmcp-for-blender gap #18).
+    def heredoc_do_hint(err, src)
+      return "" unless err.message.include?("unexpected 'do'")
+      return "" unless src.lines.first(err.location.start_line - 1).any? { |l| l.match?(HEREDOC_OPENER) }
+
+      "; a block's `do` goes at the end of the line that opens the heredoc, as in " \
+        "`server \"x\", version: \"0.1.0\", instructions: <<~TXT do`, with the heredoc's text and its terminator on the lines after it"
     end
 
     def read
@@ -32,7 +46,7 @@ module RmcpDsl
       bad(nodes[0], "server name must match [a-z][a-z0-9_-]*") unless pos[0].match?(/\A[a-z][a-z0-9_-]*\z/)
       bad(nodes[0], "version must be semver like 0.1.0, got #{kw[:version].inspect}") unless kw[:version].match?(SEMVER)
       srv = { "name" => pos[0], "version" => kw[:version], "instructions" => kw[:instructions], "params" => [], "tools" => [], "transport" => nil, "regexes" => @regexes,
-             "inputs" => [File.expand_path(@path)], "crates" => [], "items" => [], "item_lines" => [], "externs" => {}, "modules" => [], "subprocs" => [], "binding_fns" => [], "opaque_types" => [], "settings" => [], "prompts" => [], "resources" => [], "outputs" => [], "features" => [],
+             "inputs" => [File.expand_path(@path)], "crates" => [], "items" => [], "item_lines" => [], "externs" => {}, "modules" => [], "files" => [], "subprocs" => [], "binding_fns" => [], "opaque_types" => [], "settings" => [], "prompts" => [], "resources" => [], "outputs" => [], "features" => [],
              "title" => kw[:title], "description" => kw[:description], "website_url" => kw[:website_url], "icon" => kw[:icon] }
       if kw.key?(:page_size)
         bad(nodes[0], "`page_size:` is how many items one page of tools, prompts, resources and resource templates holds; it must be at least 1") if kw[:page_size] < 1
@@ -62,6 +76,7 @@ module RmcpDsl
         when :rust_item then add_item(n, p, srv)
         when :rust_fn then add_extern(n, p, k, srv)
         when :rust_file then add_file(n, p, k, srv)
+        when :file then add_any_file(n, p, k, srv)
         when :use_bindings then add_bindings(n, p, srv)
         when :cmd_fn then add_cmd(n, p, k, srv)
         when :script_fn then add_script(n, p, k, srv)
@@ -184,6 +199,7 @@ module RmcpDsl
 
         bad(@setting_nodes.fetch(s["name"]), "setting `#{s['name']}` is declared but no body reads it; use setting(:#{s['name']}) in a tool, prompt or resource body, or remove it")
       end
+      reject_unused_files(srv)
       called_helpers = @flags["used_helpers"] || {}
       @helper_table.each_key do |hname|
         next if called_helpers[hname]
@@ -206,6 +222,30 @@ module RmcpDsl
         next if used.include?(p["name"])
 
         bad(@params_nodes.fetch(p["name"]), "params `#{p['name']}` is declared but no tool uses it; remove it or add a tool")
+      end
+    end
+
+    # A `file` nothing reads, or an entry nothing names, is refused like any unused declaration. An entry that
+    # entry(...) names but no entry_args(...) builds arguments for gets W-FILE-ARGS-UNCHECKED on that call.
+    def reject_unused_files(srv)
+      read = @flags["used_files"] || {}
+      named = @flags["used_entries"] || {}
+      built = @flags["built_entries"] || {}
+      texts = @flags["file_texts"] || {}
+      srv["files"].each do |f|
+        node = @file_nodes.fetch(f["name"])
+        f["text_read"] = texts[f["name"]] ? true : false
+        unless read[f["name"]]
+          bad(node, "file `#{f['name']}` is declared but nothing reads it; use file_text(:#{f['name']}) or entry(:#{f['name']}, ...) in a body or helper, or remove it")
+        end
+        f["entries"].each do |e|
+          key = "#{f['name']}.#{e}"
+          bad(node, "entry `#{e}` of file `#{f['name']}` is listed but nothing names it; use entry(:#{f['name']}, :#{e}), or remove it from entries:") unless named[key]
+          next if built[key] || !f["sigs"].fetch(e)["checked"]
+
+          Notify.add(@path, named[key], "W-FILE-ARGS-UNCHECKED",
+                     "entry(:#{f['name']}, :#{e}) is named, but no entry_args(:#{f['name']}, :#{e}, ...) builds its arguments, so they are not checked against `def #{e}` in #{f['path']}")
+        end
       end
     end
 
@@ -341,6 +381,7 @@ module RmcpDsl
       entry = srv["settings"].find { |s| s["name"] == name }
       bad(node, "`#{what}` names setting `#{name}`, which is not declared (declared: #{known.empty? ? 'none' : known.join(', ')}); add `setting :#{name}, env: \"...\"`", word: name, from: known) unless entry
       bad(node, "`#{what}` needs `#{name}` to always have a value, but it is `optional: true`; make it required or give it a `default:`") if entry["optional"]
+      bad(node, "`#{what}` needs `#{name}` to be text, but it is `type: :#{entry['type']}`; leave `type:` out") if entry["type"]
       (@flags["used_settings"] ||= {})[name] = true
     end
 
@@ -402,6 +443,15 @@ module RmcpDsl
       raise CompileError, "#{e.message} (operation #{plan.method.upcase} #{plan.path}, argument `#{f['name']}`)"
     end
 
+    # What a setting's `default:` must be for each `type:`. A typed setting is parsed when the server starts, so its
+    # default is a value of that type, not text to parse.
+    SETTING_DEFAULT_OK = {
+      "string" => ->(v) { v.is_a?(String) }, "i64" => ->(v) { v.is_a?(Integer) && v.bit_length < 64 },
+      "f64" => ->(v) { v.is_a?(Numeric) }, "bool" => ->(v) { v == true || v == false }
+    }.freeze
+    SETTING_DEFAULT_WORDS = { "string" => "a string literal", "i64" => "an integer literal", "f64" => "a number literal",
+                              "bool" => "true or false" }.freeze
+
     # setting :api_key, env: "API_KEY", secret: true. A setting is read from its environment variable once, when the
     # server starts; a required one that is missing (or empty) stops the server with a message naming the variable, so a
     # misconfigured server never answers a call. A body reads it with setting(:api_key). A secret can only be handed to a
@@ -417,7 +467,14 @@ module RmcpDsl
       bad(node, "a setting with a `default:` is never missing, so `optional: true` has nothing to add") if kw.key?(:default) && kw[:optional]
       bad(node, "a secret has no `default:`: a key written in the file is not a secret") if kw[:secret] && kw.key?(:default)
       bad(node, "a secret is either there or the server does not start, so it cannot be `optional:`") if kw[:secret] && kw[:optional]
+      type = (kw[:type] || :string).to_s
+      bad(node, "`type: :string` is the default; leave `type:` out") if kw[:type] == :string
+      bad(node, "a secret is text, so `type: :#{type}` does not apply to `secret: true`") if kw[:secret] && type != "string"
+      if kw.key?(:default) && !SETTING_DEFAULT_OK.fetch(type).call(kw[:default])
+        bad(node, "`default:` must be #{SETTING_DEFAULT_WORDS.fetch(type)} for #{type == 'string' ? 'a' : "a `type: :#{type}`"} setting, got #{kw[:default].inspect}")
+      end
       entry = { "name" => name, "env" => kw[:env] }
+      entry["type"] = type unless type == "string"
       %i[description default].each { |k| entry[k.to_s] = kw[k] if kw.key?(k) }
       entry["optional"] = true if kw[:optional]
       entry["secret"] = true if kw[:secret]
@@ -514,18 +571,93 @@ module RmcpDsl
       end
       bad(node, "module name `#{mod}` is reserved") if %w[tests main].include?(mod)
       bad(node, "duplicate rust_file module `#{mod}`") if srv["modules"].any? { |m| m["name"] == mod }
-      base = File.realpath(File.dirname(File.expand_path(@path)))
-      full = File.expand_path(rel, base)
-      bad(node, "rust_file not found: #{rel}") unless File.file?(full)
-      real = File.realpath(full)
-      bad(node, "rust_file must stay inside #{base}") unless real.start_with?(base + File::SEPARATOR)
-      bad(node, "rust_file is larger than #{MAX_RS_BYTES} bytes") if File.size(real) > MAX_RS_BYTES
-      source = Lsp::Sources[real] || File.read(real, encoding: "UTF-8")
-      bad(node, "rust_file is not valid UTF-8") unless source.valid_encoding?
+      real, source = local_source(node, rel, "rust_file")
       srv["modules"] << { "name" => mod, "path" => rel, "source" => source, "uses" => kw[:uses]&.to_s }
       srv["inputs"] << real
       Notify.add(@path, node, "N-RUST-INJECTED",
                  "#{rel} (#{source.lines.size} line(s), sha256 #{RmcpDsl.short_digest(source)}) loaded as module `#{mod}`; the compiler does not check it")
+    end
+
+    # The text of a file a declaration names, as [real path, text]. The path comes from the DSL file, so it is
+    # confined to that file's own folder; an open editor buffer stands in for the disk (Lsp::Sources).
+    def local_source(node, rel, what)
+      base = File.realpath(File.dirname(File.expand_path(@path)))
+      full = File.expand_path(rel, base)
+      bad(node, "#{what} not found: #{rel}") unless File.file?(full)
+      real = File.realpath(full)
+      bad(node, "#{what} must stay inside #{base}") unless real.start_with?(base + File::SEPARATOR)
+      bad(node, "#{what} is larger than #{MAX_RS_BYTES} bytes") if File.size(real) > MAX_RS_BYTES
+      source = Lsp::Sources[real] || File.read(real, encoding: "UTF-8")
+      bad(node, "#{what} is not valid UTF-8") unless source.valid_encoding?
+      [real, source]
+    end
+
+    # file "python/x.py", as: :x: a file the server reads from disk on each call, as file_text(:x). Its
+    # `entries:` are the Python functions bodies name with entry(:x, :f); each is checked here against the
+    # file's `def`s, and with the args check on, its parameters are read for entry_args.
+    def add_any_file(node, pos, kw, srv)
+      rel = pos[0]
+      name = kw[:as].to_s
+      if rel.start_with?("/") || rel.include?("\0") || rel.split("/").include?("..")
+        bad(node, "file path must be relative, inside the DSL file's folder, without ..")
+      end
+      bad(node, "duplicate file `#{name}`") if srv["files"].any? { |f| f["name"] == name }
+      if kw[:env] && !kw[:env].match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+        bad(node, "`env:` is an environment variable name, such as \"BLENDER_PYTHON\"")
+      end
+      real, source = local_source(node, rel, "file")
+      entries = kw[:entries] || []
+      twice = entries.find { |e| entries.count(e) > 1 }
+      bad(node, "`#{twice}` is listed twice in entries:") if twice
+      bad(node, "`entries:` names Python functions, but #{rel} is not a .py file") if !entries.empty? && !rel.end_with?(".py")
+      unchecked = (kw[:unchecked] || []).uniq
+      sigs = entries.to_h { |e| [e, python_entry(node, rel, source, e, !unchecked.include?("args"))] }
+      record = { "name" => name, "path" => rel, "real" => real, "env" => kw[:env], "entries" => entries,
+                 "unchecked" => unchecked, "sigs" => sigs, "line" => node.location.start_line }
+      srv["files"] << record
+      (@flags["files"] ||= {})[name] = record
+      (@file_nodes ||= {})[name] = node
+      srv["inputs"] << real
+      return if unchecked.empty?
+
+      Notify.add(@path, node, "N-FILE-UNCHECKED", "#{rel}: the #{unchecked.join(' and ')} check(s) are turned off with unchecked:")
+    end
+
+    # One `entries:` name: its top-level `def` must exist with every parameter and the return annotated. With
+    # the args check on, its parameters are read too: one TypedDict parameter (its fields) or plain parameters.
+    def python_entry(node, rel, source, name, args_checked)
+      sig = begin
+        PythonSig.signature(source, name)
+      rescue PythonSig::Unreadable => e
+        bad(node, "#{rel}: #{e.message}")
+      end
+      bad(node, "`#{name}` is listed in entries: but #{rel} has no top-level `def #{name}(`") unless sig
+      if sig.returns.nil? || sig.params.any? { |p| p.annotation.nil? }
+        bad(node, "`#{sig.header.delete_suffix(':')}` in #{rel} needs a type on each parameter and a return type (`-> ...`)")
+      end
+      # header and dict_lines are what the running server compares the file against; an empty header means only
+      # that the `def` still exists is checked (the args check is off).
+      entry = { "line" => sig.line, "checked" => args_checked, "header" => args_checked ? sig.header : "", "dict" => "", "dict_lines" => [] }
+      return entry unless args_checked
+
+      begin
+        dict = sig.params.size == 1 ? PythonSig.typed_dict(source, sig.params[0].annotation) : nil
+        if dict
+          entry.merge!("shape" => "dict", "of" => sig.params[0].annotation, "dict" => sig.params[0].annotation,
+                       "dict_lines" => dict.map { |f| [f.name, f.source] },
+                       "fields" => dict.map { |f| python_field(f.name, f.type, f.required, f.line) })
+        else
+          entry.merge!("shape" => "params", "of" => "def #{name}",
+                       "fields" => sig.params.map { |p| python_field(p.name, PythonSig.parse_type(p.annotation, "def #{name} `#{p.name}`"), p.default.nil?, sig.line) })
+        end
+      rescue PythonSig::Unreadable => e
+        bad(node, "#{rel}: #{e.message}")
+      end
+      entry
+    end
+
+    def python_field(name, type, required, line)
+      { "name" => name, "base" => type.base.to_s, "nilable" => type.nilable, "text" => type.text, "required" => required, "line" => line }
     end
 
     PROGRAM_RE = %r{\A[A-Za-z0-9._+/-]+\z}
@@ -564,7 +696,7 @@ module RmcpDsl
     def add_extern(node, pos, kw, srv)
       bad(node, "duplicate rust_fn `#{pos[0]}`") if srv["externs"].key?(pos[0])
       (@extern_nodes ||= {})[pos[0]] = node
-      srv["externs"][pos[0]] = { "args" => kw[:args], "returns" => kw[:returns].to_s, "from" => kw[:from],
+      srv["externs"][pos[0]] = { "args" => kw[:args], "returns" => HELPER_TYPES.fetch(kw[:returns].to_sym).to_s, "from" => kw[:from],
                                  "async" => kw[:async] ? true : false,
                                  "async_reason" => (kw[:async] ? "is declared `async: true`" : nil) }
     end
@@ -756,13 +888,33 @@ module RmcpDsl
 
     DEFAULT_KINDS = { "string" => "a string", "i32" => "an integer", "i64" => "an integer", "f64" => "a number",
                       "bool" => "true or false" }.freeze
+    # A list field's default is a literal list whose items are the field's element type; [] is allowed.
+    LIST_DEFAULT_KINDS = {
+      "string_list" => ["a list of strings, such as [\"a\", \"b\"]", ->(v) { v.is_a?(String) }],
+      "i64_list" => ["a list of integers, such as [1, 2]", ->(v) { v.is_a?(Integer) && v.bit_length < 64 }],
+      "f64_list" => ["a list of numbers, such as [1.5, 2]", ->(v) { v.is_a?(Numeric) }]
+    }.freeze
+
+    # The default of a :string_list, :i64_list or :f64_list field (rmcp-for-blender gap #15): an optional list was
+    # otherwise `optional: true` plus `|| []` in every body that read it.
+    def list_default(node, field, value)
+      type = field["type"]
+      words, item_ok = LIST_DEFAULT_KINDS.fetch(type)
+      bad(node, "`default:` must be #{words} for the :#{type} field") unless value.is_a?(Array) && value.all?(&item_ok)
+      bad(node, "`default:` has fewer items than `min_items:`") if field["min_items"] && value.size < field["min_items"]
+      bad(node, "`default:` has more items than `max_items:`") if field["max_items"] && value.size > field["max_items"]
+      field["default"] = value
+    end
 
     # A default makes the field always present (so it is not nil-able in the body) and is advertised in the
     # schema. It has to be a value the field would accept, so it is checked against the other options.
     def field_default(node, field, value)
       type = field["type"]
       bad(node, "`default:` and `optional:` cannot be combined (a field with a default is always present)") if field["optional"]
-      bad(node, "`default:` applies to :string, :i32, :i64, :f64 and :bool fields, not :#{type}") unless DEFAULT_KINDS.key?(type)
+      return list_default(node, field, value) if LIST_DEFAULT_KINDS.key?(type)
+
+      bad(node, "`default:` applies to :string, :i32, :i64, :f64, :bool and :*_list fields, not :#{type}") unless DEFAULT_KINDS.key?(type)
+      bad(node, "`default:` must be #{DEFAULT_KINDS[type]} for the :#{type} field, not a list") if value.is_a?(Array)
       ok = case type
            when "string" then value.is_a?(String)
            when "i32", "i64" then value.is_a?(Integer)
@@ -1663,6 +1815,12 @@ module RmcpDsl
       return field_type_expr(node) if want == :fieldtype
       return meta_literal(node) if want == :json
       return schema_literal(node) if want == :schema
+      if want == :default
+        # A field default: a scalar literal, or a flat list of them for a list field.
+        return node.elements.map { |el| value(el, :lit) } if node.is_a?(Prism::ArrayNode)
+
+        return value(node, :lit)
+      end
       if want == :lit
         case node
         when Prism::IntegerNode, Prism::FloatNode then return node.value
@@ -1707,6 +1865,14 @@ module RmcpDsl
       if want == :types
         bad(node, "expected an array of type symbols, got #{nodename(node)}") unless node.is_a?(Prism::ArrayNode)
         return node.elements.map { |el| value(el, TYPES.keys).to_s }
+      end
+      if want == :snakes
+        bad(node, "expected an array of symbols such as %i[place look], got #{nodename(node)}") unless node.is_a?(Prism::ArrayNode)
+        return node.elements.map { |el| value(el, :snake) }
+      end
+      if want == :file_checks
+        bad(node, "expected an array of check names such as %i[each_read], got #{nodename(node)}") unless node.is_a?(Prism::ArrayNode)
+        return node.elements.map { |el| value(el, FILE_CHECKS).to_s }
       end
       if want == :strs
         bad(node, "expected an array of string literals, got #{nodename(node)}") unless node.is_a?(Prism::ArrayNode)

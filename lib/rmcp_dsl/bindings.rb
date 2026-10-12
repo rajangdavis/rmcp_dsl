@@ -173,27 +173,27 @@ module RmcpDsl
           bad(recv, "params needs name: Type pairs") unless kw.is_a?(Prism::KeywordHashNode)
           kw.elements.each do |el|
             bad(el, "expected name: Type") unless el.is_a?(Prism::AssocNode) && el.key.is_a?(Prism::SymbolNode)
-            params << [el.key.unescaped, type(el.value, nilable: false)]
+            params << [el.key.unescaped, type(el.value)]
           end
         end
         { params: params, returns: type(ret_arg) }
       end
 
-      # A scalar or list type, or T.nilable(...) of one as a return type. Nil is how a binding says
-      # "does not exist" or "does not parse": the DSL decides whether that is an error (`|| default`,
-      # `|| raise("...")`), so a binding never fails by itself.
-      def type(node, nilable: true)
+      # A scalar or list type, or T.nilable(...) of one. A nil-able return is how a binding says "does not
+      # exist" or "does not parse": the DSL decides whether that is an error (`|| default`, `|| raise("...")`),
+      # so a binding never fails by itself. A nil-able parameter lets the callee decide what nil means
+      # (rmcp-for-blender gap #15); it arrives as an owned Option.
+      def type(node)
         text = node.slice.gsub(/\s+/, "")
         found = scalar_or_opaque(text)
         return found if found
 
         if (m = text.match(/\AT\.nilable\((.+)\)\z/))
-          bad(node, "a parameter cannot be nilable yet; return a nilable value instead") unless nilable
           inner = scalar_or_opaque(m[1]) or bad(node, "unsupported type `#{node.slice}` (T.nilable takes one of: #{type_names})")
           return Body::OPT_OF.fetch(inner)
         end
         hint = text == "Integer" ? "; use I32 or I64 (the compiler must know the width)" : ""
-        bad(node, "unsupported type `#{node.slice}` (supported: #{type_names}, or T.nilable of those as a return type)#{hint}")
+        bad(node, "unsupported type `#{node.slice}` (supported: #{type_names}, or T.nilable of those)#{hint}")
       end
 
       # A scalar or list, or a type this file declared with `class Name < RmcpDsl::Opaque` (written Name or Module::Name).

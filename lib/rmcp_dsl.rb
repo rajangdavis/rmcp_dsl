@@ -60,6 +60,7 @@ require_relative "rmcp_dsl/bindings"
 require_relative "rmcp_dsl/composite_types"
 require_relative "rmcp_dsl/type_names"
 require_relative "rmcp_dsl/json_literal"
+require_relative "rmcp_dsl/python_sig"
 require_relative "rmcp_dsl/body"
 
 require_relative "rmcp_dsl/openapi"

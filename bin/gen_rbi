@@ -23,9 +23,10 @@ def sorbet_type(kind)
   return "T.any(Integer, Float)" if kind == :num
   return "Integer" if kind == :uint
   return "T.any(String, Integer, Float, T::Boolean)" if kind == :lit
+  return "T.any(String, Integer, Float, T::Boolean, T::Array[T.any(String, Integer, Float)])" if kind == :default
   return "T::Hash[String, T.untyped]" if kind == :json || kind == :schema
   return "T::Hash[Symbol, T.untyped]" if kind == :helper_kw
-  return "T::Array[Symbol]" if kind == :types || kind == :htypes
+  return "T::Array[Symbol]" if %i[types htypes snakes file_checks].include?(kind)
   return "T::Array[String]" if kind == :strs
   return "T.any(Symbol, T.class_of(RmcpDsl::Opaque))" if kind == :fieldtype # :i64, map(:i64), or a type a binding owns
 
@@ -61,6 +62,13 @@ def method_src(name, sig)
   [sigline, "def #{name}(#{defs.join(', ')}); end"]
 end
 
+# file_text(:name), entry(:file, :fn) and entry_args(:file, :fn, ...) read a `file`; a helper may use them too.
+FILE_CALLS = [
+  ["sig { params(name: Symbol).returns(String) }", "def file_text(name); end"],
+  ["sig { params(file: Symbol, name: Symbol).returns(String) }", "def entry(file, name); end"],
+  ["sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }", "def entry_args(file, name, **args); end"]
+].freeze
+
 by_ctx = Hash.new { |h, k| h[k] = [] }
 RmcpDsl::SIG.each { |name, sig| Array(sig.fetch(:in)).each { |ctx| by_ctx[ctx] << [name, sig] } }
 
@@ -79,6 +87,7 @@ lines = [
     # A helper body is typed as the server scope, so it needs rust(:name, args...) too (an async rust_fn is called from a helper).
     lines << "" << "  sig { params(name: Symbol, args: T.untyped).returns(T.untyped) }"
     lines << "  def rust(name, *args); end"
+    FILE_CALLS.each { |sig, definition| lines << "" << "  #{sig}" << "  #{definition}" }
   end
   if %i[tool prompt resource].include?(ctx)
     # rust(:name, args...) calls a function declared with rust_fn; the compiler checks it.
@@ -90,6 +99,7 @@ lines = [
     # setting(:name): a server setting read from the environment (a secret can only be passed to a binding or rust_fn).
     lines << "" << "  sig { params(name: Symbol).returns(T.untyped) }"
     lines << "  def setting(name); end"
+    FILE_CALLS.each { |sig, definition| lines << "" << "  #{sig}" << "  #{definition}" }
   end
   if ctx == :tool
     # the request-context built-ins a tool body may read (Body::CONTEXT_BUILTINS)
@@ -170,6 +180,45 @@ lines.concat([
   "",
   "  sig { params(value: Integer).returns(Integer) }",
   "  def self.Int64(value); end",
+  "",
+  "  sig { params(value: String).returns(Rust::Str) }",
+  "  def self.Str(value); end",
+  "",
+  "  # A string with Rust `str` behaviour; to_s leaves it.",
+  "  class Str",
+  "    sig { returns(Rust::Str) }",
+  "    def trim; end",
+  "",
+  "    sig { returns(Rust::Str) }",
+  "    def strip; end",
+  "",
+  "    sig { returns(Rust::Str) }",
+  "    def to_lowercase; end",
+  "",
+  "    sig { returns(Rust::Str) }",
+  "    def to_uppercase; end",
+  "",
+  "    sig { returns(String) }",
+  "    def to_s; end",
+  "",
+  "    sig { returns(Integer) }",
+  "    def len; end",
+  "",
+  "    sig { returns(T::Array[String]) }",
+  "    def lines; end",
+  "",
+  "    sig { params(pat: String).returns(T::Array[String]) }",
+  "    def split(pat); end",
+  "",
+  "    sig { params(pat: String).returns(T::Boolean) }",
+  "    def contains(pat); end",
+  "",
+  "    sig { params(pat: String).returns(T::Boolean) }",
+  "    def starts_with?(pat); end",
+  "",
+  "    sig { params(from: String, to: String).returns(Rust::Str) }",
+  "    def replace(from, to); end",
+  "  end",
   "end",
   "",
   "# The macros a binding file (bindings/*.rb) uses; the compiler reads them with Prism.",

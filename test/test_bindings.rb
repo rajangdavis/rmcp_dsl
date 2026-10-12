@@ -98,8 +98,12 @@ class TestBindings < Minitest::Test
     assert_equal :oi64, load_binding("url").fns["port"].returns
   end
 
-  def test_refuses_a_nilable_parameter
-    refuse("module M\n  sig { params(s: T.nilable(String)).returns(String) }\n  def self.f(s) = s.to_s\nend\n", "a parameter cannot be nilable")
+  # A parameter may be nil-able (rmcp-for-blender gap #15): the callee decides what nil means.
+  def test_a_parameter_can_be_nilable
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "ok.rb"), "module M\n  sig { params(s: T.nilable(String)).returns(String) }\n  def self.f(s) = s.to_s\nend\n")
+      assert_equal [["s", :ostr]], RmcpDsl::Bindings.load("ok", root: dir).fns["f"].params
+    end
   end
 
   def test_refuses_nilable_of_an_unsupported_type

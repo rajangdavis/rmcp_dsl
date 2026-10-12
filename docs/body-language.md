@@ -51,6 +51,11 @@ instead. `rmcp_dsl skill` writes the complete, generated reference; the outline:
 - **Request context.** A tool body may read `client_name`, `client_version` and `protocol_version` (each a
   string or nil), `request_id` (a string), `progress_token` (a string or nil, when the client asked for
   progress) and `cancelled?` (a bool).
+- **Files.** `file_text(:name)` is the text of a file declared with `file "path", as: :name`, read from disk on
+  each call (an error result if it cannot be read); it works in a helper too. `entry(:name, :fn)` is the string
+  `"fn"`, refused unless `:fn` is in the file's `entries:`, and `entry_args(:name, :fn, key: value, ...)` is the
+  arguments as JSON text, each key and type checked against `def fn` (its one TypedDict parameter or its plain
+  parameters); nil is `null`, and a nil-able value needs a field that allows `None`.
 - **Settings.** `setting(:name)` reads a value the server declared with `setting :name, env: "..."`, always as a
   string, so a numeric one is parsed in the body (`setting(:port).to_i`, Ruby's rules, an error result if it does
   not fit). It works only in a tool, prompt or resource body, not in a helper or a binding, where the value must
@@ -75,6 +80,10 @@ instead. `rmcp_dsl skill` writes the complete, generated reference; the outline:
 - **Integers follow Ruby:** `/` rounds down and `%` takes the sign of the divisor. `Rust::Int32(a) / b`
   opts into Rust's truncating behaviour. Arithmetic is overflow-checked and a result that does not fit
   comes back as an error that says what, where and how to fix.
+- **Strings follow Ruby:** `strip` is not Rust's `trim`. `Rust::Str(s)` opts into Rust's `str` behaviour: `trim`,
+  `strip` (the same as `trim`, with notice `N-STR-STRIP-RUST`), `to_lowercase`, `to_uppercase`, `len` (bytes),
+  `lines`, `split(pat)`, `contains(pat)`, `starts_with?(pat)` and `replace(from, to)`; `to_s` leaves it for a
+  plain string, which a body must do before returning it.
 - The last expression is the result and must be a string.
 
 The DSL is strict on purpose so the file says exactly what the server does and the generated Rust stays
@@ -111,6 +120,10 @@ know names declared in the DSL, so `rmcp_dsl rbi FILE...` writes their signature
 `sorbet/rbi/rmcp_dsl/dsl_helpers.rbi` (`make rbi-helpers`; `make check` fails if it is stale) and files that
 call helpers stay `# typed: true`. Two files declaring one helper with different types are refused. The
 compiler checks every call regardless. `examples/webkit.rmcp.rb` uses four.
+
+**Helper rules.** A helper cannot read a setting. `setting(:x)` works only in a tool, prompt or resource body, so a helper that needs one takes it as an argument. In a body, block parameters are the params field names exactly, with no aliasing: `|image_ref|` must name a field. A local must be snake_case and may not be a Rust keyword, such as `ref` or `type`.
+
+**Moves.** Ruby reads a local without using it up, but Rust moves a value. So the compiler clones a `String`, list, map or JSON local where Rust would move it: as the value of an `if`, `unless` or `case` branch, on the right of `a = b`, and on the left of `||` when that side is nil-able. The local stays readable afterwards. Generated structs and binding (opaque) types are not cloned and still move. For those, restructure the body so each value is moved on one path only, and is not read after the move.
 
 **Async.** A `rust_fn` or binding function declared `async: true` is an `async fn`; a body that calls any
 async function is compiled `async fn` too. Async is inferred, so a caller never repeats `async: true`:

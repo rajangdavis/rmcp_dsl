@@ -169,7 +169,10 @@ module RmcpDsl
       pages tools, prompts, resources and templates, with opaque cursors. `setting :token, env: "API_TOKEN", secret: true`
       declares a value read from the environment at startup (`default:`, `optional:`); a body reads it with
       `setting(:token)`, and a secret can only be passed to a binding or rust_fn function (never printed, returned or
-      compared). `input_schema: { ... }` on a tool publishes a hand-written schema, checked against the fields.
+      compared). `file "python/x.py", as: :x, entries: %i[place]` loads a file read from disk on each call: a body or
+      helper reads it with `file_text(:x)`, names a checked Python function with `entry(:x, :place)` and builds its
+      arguments with `entry_args(:x, :place, key: value)`, checked against the `def` and its TypedDict.
+      `input_schema: { ... }` on a tool publishes a hand-written schema, checked against the fields.
       A prompt can be a conversation:
       use `message :assistant do ... end` and `message :user do |topic| ... end` blocks, in order, instead of
       one `body`. A prompt argument is completed automatically: an `enum:` field offers its values, a `:string` field
@@ -203,6 +206,11 @@ module RmcpDsl
 
       Integers: `:i32` and `:i64` arithmetic is overflow-checked, and `/` and `%` round down like Ruby.
       `Rust::Int32(x)` and `Rust::Int64(x)` opt into Rust's truncating semantics for one operation.
+
+      Strings: Ruby's methods keep Ruby's rules (`strip` is not Rust's `trim`). `Rust::Str(s)` opts into Rust's
+      `str` behaviour: `trim`, `strip` (the same as `trim`, with notice N-STR-STRIP-RUST), `to_lowercase`,
+      `to_uppercase`, `len` (bytes), `lines`, `split(pat)`, `contains(pat)`, `starts_with?(pat)` and
+      `replace(from, to)`; `to_s` leaves it for a plain string. A body cannot return a Rust::Str without `to_s`.
 
       Values that may be nil: `xs[i]`, `xs.first`, `xs.last`, `s.index(x)` and `s =~ /re/` return nil in Ruby
       when nothing matches, so a body may only use them through `|| default` (the default runs only when the
@@ -440,7 +448,7 @@ module RmcpDsl
       ```
 
       - `sig` gives the types: `String`, `Float`, `I32`, `I64`, `T::Boolean`, `T::Array[String]`,
-        `T::Array[I64]`, and `T.nilable(...)` of those as a return type.
+        `T::Array[I64]`, and `T.nilable(...)` of those, for a return or a parameter.
       - Without a `rust` line the Ruby body is compiled to Rust and is the implementation. With
         `rust "heck::ToSnakeCase::to_snake_case(s)"` above the method, that Rust expression does the work and the
         Ruby body is only the reference the tests compare it against. `no_reference "why"` marks a function with
@@ -510,6 +518,7 @@ module RmcpDsl
       when :str then "string literal"
       when :bool then "true or false"
       when :lit then "a string, number or true/false literal"
+      when :default then "a string, number or true/false literal, or a list of them for a list field"
       when :schema then "a JSON Schema object literal with string keys (`{ \"type\" => \"object\", \"properties\" => { ... } }`)"
       when :json then "a JSON object literal with string keys (`{ \"example.com/tier\" => \"free\" }`)"
       when :fieldtype then "a type symbol (#{(TYPES.keys + FIELD_LISTS).map(&:inspect).join(", ")}, or the CamelCase name of another params to nest an object)"
@@ -518,6 +527,8 @@ module RmcpDsl
       when :snake then "snake_case symbol"
       when :camel then "CamelCase symbol"
       when :types then "array of type symbols"
+      when :snakes then "array of snake_case symbols, such as %i[place look]"
+      when :file_checks then "array of check names: #{FILE_CHECKS.map(&:inspect).join(", ")}"
       when :strs then "array of string literals"
       when Array then "one of #{kind.map(&:inspect).join(', ')}"
       else kind.to_s

@@ -30,5 +30,20 @@ module Rust
 
     # str::len is the byte length, not the character count.
     def len = @s.bytesize
+
+    # str::lines: split on "\n", dropping a "\r" before it and no final empty line.
+    def lines = @s.split("\n", -1).tap { |a| a.pop if a.last == "" }.map { |l| l.chomp("\r") }
+
+    # str::split(pat) with a string pattern keeps empty pieces, including a trailing one.
+    # (Ruby gives [] for an empty string where Rust gives [""].)
+    def split(pat) = @s.empty? ? [""] : @s.split(pat.to_s, -1)
+
+    # str::contains / str::starts_with / str::replace, string patterns.
+    def contains(pat) = @s.include?(pat.to_s)
+    def starts_with?(pat) = @s.start_with?(pat.to_s)
+    def replace(from, to) = Str.new(@s.gsub(from.to_s) { to.to_s })
   end
+
+  # Rust::Str(s) reads like the Integer(x) conversion function, as Rust.Int32 does.
+  def self.Str(value) = Str.new(value)
 end
