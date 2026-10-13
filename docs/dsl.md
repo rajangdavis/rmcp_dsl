@@ -124,6 +124,13 @@ end
   Ruby-compiled binding may not (the call is refused with the reason), and `async: true` on `cmd_fn`/`script_fn`
   is refused because a subprocess is blocking. It is refused on a `helper` too: a helper is async exactly when
   its body calls an async function, so the caller does not write it.
+- **Splitting a server into files.** `use_dsl "dsl/tools.rmcp.rb"` inside `server` reads a fragment, a file whose
+  one top-level call is `fragment do ... end`, and treats its declarations as if they were written at that line,
+  so declaration order (and the helper rule above) runs across files. A fragment holds what `server` holds except
+  `transport`, and may `use_dsl` another. Paths are relative to the file that says `use_dsl`, as are a
+  fragment's `file`, `rust_file` and `openapi` paths, and stay inside the server file's folder; no file is
+  included twice. An error names the fragment's own file and line, and so does a rustc error mapped back from
+  a tool it declares. Build the server file, not a fragment (`docs/specs/use_dsl.md`).
 
 `examples/notekit.rmcp.rb` and `make e2e-notekit` cover most of this; `examples/formkit.rmcp.rb` covers lists, nested
 objects, defaults and formats; `examples/guide.rmcp.rb` is a server with no tools, only a prompt and a resource.

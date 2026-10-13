@@ -39,7 +39,7 @@ module RmcpDsl
 
       def add(path, node, code, message)
         loc = node.location
-        @notes << Note.new(code, CODES.fetch(code), path, loc.start_line, loc.start_column + 1, message)
+        @notes << Note.new(code, CODES.fetch(code), RmcpDsl.file_of(node) || path, loc.start_line, loc.start_column + 1, message)
       end
 
       # Prints what the gates allow and counts the rest. Returns the hidden notes.

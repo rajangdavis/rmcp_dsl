@@ -88,6 +88,23 @@ class TestPythonSig < Minitest::Test
     assert_raises(SIG::Unreadable) { SIG.parse_type("int | str", "A.n") }
   end
 
+  def test_a_literal_of_strings_is_a_string_with_its_values
+    t = SIG.parse_type(%(Literal["mp4", 'webm'] | None), "A.format")
+    assert_equal [:string, true, %w[mp4 webm]], [t.base, t.nilable, t.literals]
+    assert_nil SIG.parse_type("str", "A.name").literals
+    err = assert_raises(SIG::Unreadable) { SIG.parse_type("Literal[1, 2]", "A.n") }
+    assert_match(/A.n: `Literal\[1, 2\]` cannot be checked; a Literal must list plain strings/, err.message)
+  end
+
+  def test_a_name_defined_twice_at_the_top_level_is_refused
+    twice = "def f(a: int) -> int:\n    return a\n\n\ndef f(a: str) -> str:\n    return a\n"
+    err = assert_raises(SIG::Unreadable) { SIG.signature(twice, "f") }
+    assert_match(/`def f` is defined 2 times at the top level \(lines 1, 5\); Python keeps the last/, err.message)
+    classes = "class A(TypedDict):\n    x: int\n\n\nclass A(TypedDict):\n    y: str\n"
+    err = assert_raises(SIG::Unreadable) { SIG.typed_dict(classes, "A") }
+    assert_match(/`class A` is defined 2 times at the top level \(lines 1, 5\)/, err.message)
+  end
+
   def test_a_typed_dict_with_total_false_is_refused
     err = assert_raises(SIG::Unreadable) { SIG.typed_dict("class A(TypedDict, total=False):\n    x: int\n", "A") }
     assert_match(/total=False/, err.message)

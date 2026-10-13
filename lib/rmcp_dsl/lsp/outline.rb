@@ -5,6 +5,7 @@ module RmcpDsl
     # The document outline: an LSP DocumentSymbol[] with the server at the top and, in source order, its params
     # (with their fields), outputs, tools, prompts, resources, helpers and transport as children. Pure; no I/O.
     module Outline
+      FILE = 1
       MODULE = 2
       FIELD = 8
       INTERFACE = 11
@@ -14,7 +15,7 @@ module RmcpDsl
 
       SYMBOL_KINDS = {
         "server" => MODULE, "params" => STRUCT, "output" => INTERFACE, "tool" => FUNCTION, "prompt" => FUNCTION,
-        "resource" => CONSTANT, "helper" => FUNCTION, "transport" => CONSTANT
+        "resource" => CONSTANT, "helper" => FUNCTION, "transport" => CONSTANT, "use_dsl" => FILE
       }.freeze
       WITH_FIELDS = %w[params output].freeze
 

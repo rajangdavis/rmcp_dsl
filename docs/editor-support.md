@@ -15,6 +15,15 @@ compiler will accept: no Sorbet or ruby-lsp is needed for it, and it works on un
 - **Go to definition** jumps from `params: :Name`, `output: :Name`, a nested `field :x, :Name` or `result(:Name, ...)` to
   the declaration, and from a helper call to `helper :name`. The **outline** lists the server with its params (and
   fields), outputs, tools, prompts, resources, helpers and transport.
+- **Split servers** (`use_dsl`): an error is shown on the line of the file that holds it, whether the server file
+  or the fragment is open, and the server file also marks the `use_dsl` line that brings the failing fragment in.
+  A fragment opened on its own is checked through its server file, found in the fragment's folder or up to four
+  above it (not above a `.git` folder); with none, it says so. Go to definition follows a `use_dsl` path, and a
+  helper or params name to the fragment that declares it; inside `fragment do` completion offers what `server`
+  takes. The outline lists each `use_dsl`.
+- **Binding records** (`field :text, String` in a binding's `Opaque` class): completion after a dot on a record
+  offers its fields, go to definition goes from `row.text` to the `field` line and from `Rows::Row` to the `class`
+  line, hover shows a field read's type, and `rmcp_dsl rbi` writes typed readers so Sorbet agrees.
 - **Inlay hints** show `: Type` after each body parameter in `|email, level|` and after each local.
 - **Completion** offers methods valid for the receiver's type after a dot, the tool's fields in `|...|`,
   names in scope, keyword arguments, symbol values (`:string`, `transport :http`, declared `params:` names) and

@@ -390,8 +390,8 @@ class TestLspCompletion < Minitest::Test
     assert_equal %w[tool], labels("server \"x\", version: \"1\" do\n  to#{C}")
   end
 
-  def test_top_level_offers_server
-    assert_equal %w[server], labels("#{C}")
+  def test_top_level_offers_server_and_fragment
+    assert_equal %w[server fragment], labels("#{C}")
   end
 
   def test_params_and_output_blocks_offer_field

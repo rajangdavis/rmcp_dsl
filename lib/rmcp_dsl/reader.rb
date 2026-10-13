@@ -24,6 +24,9 @@ module RmcpDsl
         }.join("\n")
       end
       @program = res.value
+      RmcpDsl::SOURCE_FILES.clear
+      RmcpDsl.register_source(@program, path, RmcpDsl.canon(path))
+      @included = {} # use_dsl: absolute path of each fragment => "FILE:LINE" of the use_dsl that brought it in
     end
 
     HEREDOC_OPENER = /<<[~-]?(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/
@@ -41,6 +44,9 @@ module RmcpDsl
 
     def read
       nodes = @program.statements.body
+      if nodes[0].is_a?(Prism::CallNode) && nodes[0].name == :fragment
+        bad(nodes[0], "#{@path} is a fragment; build the file that says use_dsl for it")
+      end
       bad(nodes[1] || @program, "expected exactly one top-level `server` call") unless nodes.size == 1
       pos, kw, blk = call(nodes[0], :top)
       bad(nodes[0], "server name must match [a-z][a-z0-9_-]*") unless pos[0].match?(/\A[a-z][a-z0-9_-]*\z/)
@@ -61,8 +67,10 @@ module RmcpDsl
       resource_nodes = []
       @helper_table = {}   # helpers compiled so far, in declaration order: name -> record
       @helper_decls = {}   # helper name -> its DSL node (for messages)
-      each_child(blk, :server) do |n, p, k, b|
+      # One declaration of the server, from this file or from a fragment use_dsl splices in at its line.
+      declare = lambda do |n, p, k, b|
         case n.name
+        when :use_dsl then splice(n, p[0], srv, &declare)
         when :params then srv["params"] << params_decl(n, p, b, srv)
         when :output then srv["outputs"] << output_decl(n, p, b, srv)
         when :tool then pending << [n, p, k, b]
@@ -81,6 +89,7 @@ module RmcpDsl
         when :cmd_fn then add_cmd(n, p, k, srv)
         when :script_fn then add_script(n, p, k, srv)
         when :transport
+          bad(n, "transport belongs in the file that says server") if RmcpDsl.file_of(n) != @path
           bad(n, "duplicate `transport`") if srv["transport"]
           srv["transport"] = p[0].to_s
           if srv["transport"] == "http"
@@ -123,6 +132,7 @@ module RmcpDsl
           end
         end
       end
+      each_child(blk, :server, &declare)
       bad(nodes[0], "missing `transport`") unless srv["transport"]
       srv["externs"].each do |fname, ext|
         next if ext["from"].nil? || srv["modules"].any? { |m| m["name"] == ext["from"] }
@@ -152,6 +162,67 @@ module RmcpDsl
     end
 
     private
+
+    # use_dsl "dsl/x.rmcp.rb": the declarations of a fragment, a file whose one top-level call is
+    # `fragment do ... end`, spliced in at this line and yielded one by one as if written here. The path is
+    # relative to the file that says use_dsl and stays inside the root's folder; a fragment may use_dsl another,
+    # but no file is included twice. docs/specs/use_dsl.md is the contract.
+    def splice(node, rel, srv)
+      unless rel.end_with?(".rmcp.rb") && !rel.start_with?("/") && !rel.include?("\0") && !rel.split("/").include?("..")
+        bad(node, "use_dsl path must be relative, inside the DSL file's folder, without .., and end in .rmcp.rb")
+      end
+      dir = dir_of(node)
+      full = File.expand_path(rel, dir)
+      bad(node, "use_dsl file not found: #{rel} (looked in #{dir})") unless Lsp::Sources[full] || File.file?(full)
+      root = File.realpath(File.dirname(File.expand_path(@path)))
+      real = File.file?(full) ? File.realpath(full) : full
+      bad(node, "use_dsl file must stay inside #{root}") unless real.start_with?(root + File::SEPARATOR)
+      shown = File.dirname(@path) == "." ? real.delete_prefix(root + File::SEPARATOR) : File.join(File.dirname(@path), real.delete_prefix(root + File::SEPARATOR))
+      bad(node, "#{shown} is the file being built; it cannot be included") if real == File.realpath(File.expand_path(@path))
+      bad(node, "#{shown} is already included (by #{@included[real]})") if @included.key?(real)
+      @included[real] = "#{RmcpDsl.file_of(node) || @path}:#{node.location.start_line}"
+      text = Lsp::Sources[real] || File.read(real, encoding: "UTF-8")
+      bad(node, "use_dsl file is not valid UTF-8: #{rel}") unless text.valid_encoding?
+      bad(node, "use_dsl file is larger than #{MAX_RS_BYTES} bytes: #{rel}") if text.bytesize > MAX_RS_BYTES
+      res = Prism.parse(text)
+      unless res.errors.empty?
+        raise CompileError, res.errors.map { |e|
+          "#{shown}:#{e.location.start_line}:#{e.location.start_column + 1}: syntax error: #{e.message}#{heredoc_do_hint(e, text)}"
+        }.join("\n")
+      end
+      RmcpDsl.register_source(res.value, shown, real)
+      srv["inputs"] << real
+      top = res.value.statements.body
+      unless top.size == 1 && top[0].is_a?(Prism::CallNode) && top[0].name == :fragment
+        bad(top[1] || top[0] || res.value, "expected exactly one top-level `fragment` call in a file use_dsl includes")
+      end
+      _, _, blk = call(top[0], :top)
+      each_child(blk, :server) { |n, p, k, b| yield n, p, k, b }
+    end
+
+    # The folder of the file a node was read from: the root, or the fragment that holds it. A relative path in
+    # a declaration (rust_file, file, openapi, use_dsl) resolves against it.
+    def dir_of(node) = File.realpath(File.dirname(RmcpDsl.real_file_of(node) || File.expand_path(@path)))
+
+    # The "line" of a declaration for the IR and the source map, and its "file" when a fragment holds it.
+    def located(node)
+      file = RmcpDsl.file_of(node)
+      line = node.location.start_line
+      file && file != @path ? { "line" => line, "file" => file } : { "line" => line }
+    end
+
+    # Where the earlier of two same-named declarations is, for a duplicate refused at the later one: " (first at
+    # FILE:LINE)" when it is in another file of a use_dsl split, "" when both are in one file. `earlier` is its IR
+    # record ("line", and "file" when a fragment holds it) or its node.
+    def first_at(node, earlier)
+      return "" unless earlier
+
+      file, line =
+        if earlier.is_a?(Prism::Node) then [RmcpDsl.file_of(earlier) || @path, earlier.location.start_line]
+        else [earlier["file"] || @path, earlier["line"]]
+        end
+      line.nil? || file == (RmcpDsl.file_of(node) || @path) ? "" : " (first at #{file}:#{line})"
+    end
 
     # A bindings/*.rb that no `use_bindings` names is never parsed, so its crates never reach
     # Cargo.toml and the failure surfaces later as a missing crate in generated Rust. One bindings/
@@ -283,8 +354,11 @@ module RmcpDsl
       end
       file.types.each_value do |t|
         qualified = "#{file.module_name}::#{t.name}"
-        CompositeTypes::Opaque.register(qualified, t.rust, t.wire)
-        srv["opaque_types"] << { "name" => qualified, "rust" => t.rust, "wire" => t.wire }
+        fields = t.fields.map { |n, sym, line| [n, sym.to_s, line] }
+        CompositeTypes::Opaque.register(qualified, t.rust, t.wire, fields, file.path, t.node.location.start_line)
+        entry = { "name" => qualified, "rust" => t.rust, "wire" => t.wire }
+        # a record's fields and where they are declared, for Emit's check against the Rust type
+        srv["opaque_types"] << (fields.empty? ? entry : entry.merge("fields" => fields, "path" => file.path, "line" => t.node.location.start_line))
       end
       @bindings[name] = file
       @binding_modules[file.module_name] = file
@@ -304,7 +378,7 @@ module RmcpDsl
       unless rel.match?(/\.(json|ya?ml)\z/i) && !rel.start_with?("/") && !rel.include?("\0") && !rel.split("/").include?("..")
         bad(node, "openapi path must be relative, inside the DSL file's folder, without .., and end in .json, .yaml or .yml")
       end
-      base_dir = File.realpath(File.dirname(File.expand_path(@path)))
+      base_dir = dir_of(node)
       full = File.expand_path(rel, base_dir)
       bad(node, "openapi file not found: #{rel} (looked in #{base_dir})") unless File.file?(full)
       real = File.realpath(full)
@@ -417,7 +491,7 @@ module RmcpDsl
       bad(node, "operation #{plan.method.upcase} #{plan.path}: the tool name `#{plan.name}` is already a tool of this server") if srv["tools"].any? { |t| t["name"] == plan.name }
       bad(node, "operation #{plan.method.upcase} #{plan.path}: the arguments would be called `#{args_name}`, which is already a params or output name") if (srv["params"] + srv["outputs"]).any? { |x| x["name"] == args_name }
       fields = plan.fields.map { |f| openapi_field(node, plan, f, srv) }
-      prm = { "name" => args_name, "fields" => fields, "line" => node.location.start_line }
+      prm = { "name" => args_name, "fields" => fields, **located(node) }
       srv["params"] << prm
       begin
         check_input_schema(node, plan.schema, prm) # the schema and the fields come from one place; this keeps them honest
@@ -425,7 +499,7 @@ module RmcpDsl
         raise CompileError, "#{e.message} (this is a bug in the openapi reader: operation #{plan.method.upcase} #{plan.path})"
       end
       decl = { "name" => plan.name, "description" => plan.description, "params" => args_name,
-               "body" => OpenApi.body_ir(plan, base: base, auth: auth), "line" => node.location.start_line,
+               "body" => OpenApi.body_ir(plan, base: base, auth: auth), **located(node),
                "input_schema" => plan.schema }
       decl["annotations"] = plan.annotations
       srv["tools"] << decl
@@ -458,7 +532,7 @@ module RmcpDsl
     # binding or rust_fn function (the body language refuses to print or return it), and is never written to a message.
     def add_setting(node, pos, kw, srv)
       name = pos[0]
-      bad(node, "duplicate setting `#{name}`") if srv["settings"].any? { |s| s["name"] == name }
+      bad(node, "duplicate setting `#{name}`#{first_at(node, @setting_nodes&.[](name))}") if srv["settings"].any? { |s| s["name"] == name }
       bad(node, "`env:` is an environment variable name in capitals, such as \"API_KEY\", got #{kw[:env].inspect}") unless kw[:env].match?(/\A[A-Z][A-Z0-9_]*\z/)
       dup = srv["settings"].find { |s| s["env"] == kw[:env] }
       bad(node, "setting `#{dup['name']}` already reads #{kw[:env]}; one variable, one setting") if dup
@@ -581,7 +655,7 @@ module RmcpDsl
     # The text of a file a declaration names, as [real path, text]. The path comes from the DSL file, so it is
     # confined to that file's own folder; an open editor buffer stands in for the disk (Lsp::Sources).
     def local_source(node, rel, what)
-      base = File.realpath(File.dirname(File.expand_path(@path)))
+      base = dir_of(node)
       full = File.expand_path(rel, base)
       bad(node, "#{what} not found: #{rel}") unless File.file?(full)
       real = File.realpath(full)
@@ -601,7 +675,7 @@ module RmcpDsl
       if rel.start_with?("/") || rel.include?("\0") || rel.split("/").include?("..")
         bad(node, "file path must be relative, inside the DSL file's folder, without ..")
       end
-      bad(node, "duplicate file `#{name}`") if srv["files"].any? { |f| f["name"] == name }
+      bad(node, "duplicate file `#{name}`#{first_at(node, srv["files"].find { |f| f["name"] == name })}") if srv["files"].any? { |f| f["name"] == name }
       if kw[:env] && !kw[:env].match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
         bad(node, "`env:` is an environment variable name, such as \"BLENDER_PYTHON\"")
       end
@@ -613,7 +687,7 @@ module RmcpDsl
       unchecked = (kw[:unchecked] || []).uniq
       sigs = entries.to_h { |e| [e, python_entry(node, rel, source, e, !unchecked.include?("args"))] }
       record = { "name" => name, "path" => rel, "real" => real, "env" => kw[:env], "entries" => entries,
-                 "unchecked" => unchecked, "sigs" => sigs, "line" => node.location.start_line }
+                 "unchecked" => unchecked, "sigs" => sigs, **located(node) }
       srv["files"] << record
       (@flags["files"] ||= {})[name] = record
       (@file_nodes ||= {})[name] = node
@@ -657,7 +731,8 @@ module RmcpDsl
     end
 
     def python_field(name, type, required, line)
-      { "name" => name, "base" => type.base.to_s, "nilable" => type.nilable, "text" => type.text, "required" => required, "line" => line }
+      { "name" => name, "base" => type.base.to_s, "nilable" => type.nilable, "text" => type.text, "required" => required, "line" => line,
+        "literals" => type.literals }
     end
 
     PROGRAM_RE = %r{\A[A-Za-z0-9._+/-]+\z}
@@ -682,11 +757,11 @@ module RmcpDsl
     # A subprocess is exposed to bodies as a rust_fn returning :string, so rust(:name, ...) works.
     def register_subproc(node, name, program, prefix, args, pass, srv, kind)
       bad(node, "program `#{program}` may only contain letters, digits and . _ + - /") unless program.match?(PROGRAM_RE)
-      bad(node, "`#{name}` is already declared") if srv["externs"].key?(name)
+      bad(node, "`#{name}` is already declared#{first_at(node, @extern_nodes&.[](name))}") if srv["externs"].key?(name)
       bad(node, "argv entries must not contain NUL") if prefix.any? { |s| s.include?("\0") }
       bad(node, "pass: :stdin needs exactly one :string argument") if pass == "stdin" && args != ["string"]
       srv["subprocs"] << { "name" => name, "program" => program, "argv" => prefix, "args" => args, "pass" => pass,
-                           "line" => node.location.start_line }
+                           **located(node) }
       srv["externs"][name] = { "args" => args, "returns" => "string", "from" => nil }
       (@extern_nodes ||= {})[name] = node
       Notify.add(@path, node, "N-EXEC-INJECTED",
@@ -694,7 +769,7 @@ module RmcpDsl
     end
 
     def add_extern(node, pos, kw, srv)
-      bad(node, "duplicate rust_fn `#{pos[0]}`") if srv["externs"].key?(pos[0])
+      bad(node, "duplicate rust_fn `#{pos[0]}`#{first_at(node, @extern_nodes&.[](pos[0]))}") if srv["externs"].key?(pos[0])
       (@extern_nodes ||= {})[pos[0]] = node
       srv["externs"][pos[0]] = { "args" => kw[:args], "returns" => HELPER_TYPES.fetch(kw[:returns].to_sym).to_s, "from" => kw[:from],
                                  "async" => kw[:async] ? true : false,
@@ -1000,7 +1075,7 @@ module RmcpDsl
       text = node.slice
       mod, _, name = text.rpartition("::")
       file = @binding_modules[mod]
-      bad(node, "`#{inside}(#{text})` is not supported yet: collections hold basic types, not a binding's own types") if inside
+      bad(node, "`#{inside}(#{text})` is not supported yet: a map holds basic types, not a binding's own types") if inside && inside != :list
       bad(node, "`#{text}`: no binding provides module `#{mod}` (declare `use_bindings :#{mod.downcase}` above the params)", word: mod, from: @binding_modules.keys) unless file
       type = file.types[name] or
         bad(node, "binding #{mod} has no type `#{name}` (its types: #{file.types.keys.join(', ').then { |s| s.empty? ? 'none' : s }})", word: name, from: file.types.keys)
@@ -1020,7 +1095,7 @@ module RmcpDsl
       end
       inner = field_type_expr(args[0], inside: node.name)
       if node.name == :list
-        return "list(#{inner})" if inner.match?(CAMEL)
+        return "list(#{inner})" if inner.match?(CAMEL) || inner.match?(CompositeTypes::OPAQUE_FIELD)
 
         return { "string" => "string_list", "i64" => "i64_list", "f64" => "f64_list" }.fetch(inner) do
           bad(args[0], "`list(:#{inner})` is not supported yet; lists hold :string, :i64 or :f64")
@@ -1063,8 +1138,8 @@ module RmcpDsl
     # does not check what it returns, so only types, descriptions and optional fields exist here.
     def output_decl(node, pos, blk, srv)
       (@output_nodes ||= {})[pos[0]] = node
-      bad(node, "duplicate output `#{pos[0]}`") if srv["outputs"].any? { |x| x["name"] == pos[0] }
-      bad(node, "`#{pos[0]}` is already the name of a params struct") if srv["params"].any? { |x| x["name"] == pos[0] }
+      bad(node, "duplicate output `#{pos[0]}`#{first_at(node, srv["outputs"].find { |x| x["name"] == pos[0] })}") if srv["outputs"].any? { |x| x["name"] == pos[0] }
+      bad(node, "`#{pos[0]}` is already the name of a params struct#{first_at(node, srv["params"].find { |x| x["name"] == pos[0] })}") if srv["params"].any? { |x| x["name"] == pos[0] }
       fields = []
       each_child(blk, :output) do |n, p, k, _b|
         bad(n, "duplicate field `#{p[0]}`") if fields.any? { |f| f["name"] == p[0] }
@@ -1078,7 +1153,7 @@ module RmcpDsl
       end
       bad(node, "output `#{pos[0]}` needs at least one `field`") if fields.empty?
       @types&.add(node.location, "output", pos[0], name: pos[0])
-      { "name" => pos[0], "fields" => fields, "line" => node.location.start_line }
+      { "name" => pos[0], "fields" => fields, **located(node) }
     end
 
     # Calls that already have a richer entry (field, helper, output) or no meaning of their own (body) are skipped.
@@ -1105,8 +1180,8 @@ module RmcpDsl
 
     def params_decl(node, pos, blk, srv)
       (@params_nodes ||= {})[pos[0]] = node
-      bad(node, "duplicate params `#{pos[0]}`") if srv["params"].any? { |x| x["name"] == pos[0] }
-      bad(node, "`#{pos[0]}` is already the name of an output") if srv["outputs"].any? { |x| x["name"] == pos[0] }
+      bad(node, "duplicate params `#{pos[0]}`#{first_at(node, srv["params"].find { |x| x["name"] == pos[0] })}") if srv["params"].any? { |x| x["name"] == pos[0] }
+      bad(node, "`#{pos[0]}` is already the name of an output#{first_at(node, srv["outputs"].find { |x| x["name"] == pos[0] })}") if srv["outputs"].any? { |x| x["name"] == pos[0] }
       fields = []
       each_child(blk, :params) do |n, p, k, _b|
         bad(n, "duplicate field `#{p[0]}`") if fields.any? { |f| f["name"] == p[0] }
@@ -1118,7 +1193,7 @@ module RmcpDsl
         fields << field
       end
       # An empty params is allowed: an MCP tool can take no arguments at all (a ping, a scene snapshot).
-      { "name" => pos[0], "fields" => fields, "line" => node.location.start_line }
+      { "name" => pos[0], "fields" => fields, **located(node) }
     end
 
     # Names a helper cannot take: they would collide with something the generated crate defines, or with a
@@ -1133,7 +1208,7 @@ module RmcpDsl
     def helper_decl(node, pos, kw, blk, srv)
       name = pos[0]
       refuse_helper_async(node, name, kw[:async])
-      bad(node, "duplicate helper `#{name}`") if @helper_table.key?(name)
+      bad(node, "duplicate helper `#{name}`#{first_at(node, @helper_table[name])}") if @helper_table.key?(name)
       bad(node, "helper `#{name}` has the same name as a rust_fn, cmd_fn or script_fn") if srv["externs"].key?(name)
       bad(node, "`#{name}` is reserved; pick another helper name") if RESERVED_HELPERS.include?(name) || name.start_with?("__")
       arg_syms = kw[:args].map(&:to_sym)
@@ -1174,7 +1249,7 @@ module RmcpDsl
                   name: name, extra: async ? { async: true, async_reason: reason } : nil)
       @helper_table[name] = { "name" => name, "args" => names.zip(arg_types.map(&:to_s)), "kw" => kw_record,
                               "returns" => ret.to_s, "body" => body, "async" => async, "async_reason" => reason,
-                              "line" => node.location.start_line }
+                              **located(node) }
     end
 
     # The positional and keyword parameters a helper block declares. Positional parameters come first, then
@@ -1253,7 +1328,7 @@ module RmcpDsl
     # A prompt is a tool-shaped declaration whose body returns the text of one user message. MCP passes prompt
     # arguments as strings, so its params may only have :string fields (convert with to_i in the body).
     def prompt_decl(node, pos, kw, blk, srv)
-      bad(node, "duplicate prompt `#{pos[0]}`") if srv["prompts"].any? { |x| x["name"] == pos[0] }
+      bad(node, "duplicate prompt `#{pos[0]}`#{first_at(node, srv["prompts"].find { |x| x["name"] == pos[0] })}") if srv["prompts"].any? { |x| x["name"] == pos[0] }
       prm = srv["params"].find { |x| x["name"] == kw[:params] } or
         undeclared(node, "prompt `#{pos[0]}` refers to undeclared params `#{kw[:params]}`", kw[:params], srv["params"].map { |x| x["name"] })
       if (field = prm["fields"].find { |f| f["type"] != "string" })
@@ -1278,7 +1353,7 @@ module RmcpDsl
       bad(node, "prompt `#{pos[0]}` needs a `body` or at least one `message`") if messages.empty?
       messages.each { |m| m.delete("single") }
       decl = { "name" => pos[0], "description" => kw[:description], "params" => prm["name"], "body" => messages.first["body"],
-               "messages" => messages, "line" => node.location.start_line }
+               "messages" => messages, **located(node) }
       decl["title"] = kw[:title] if kw[:title]
       decl["icon"] = kw[:icon] if kw[:icon]
       decl["meta"] = kw[:meta] if kw[:meta]
@@ -1464,10 +1539,10 @@ module RmcpDsl
     # A resource is readable text at a URI. A plain uri takes no parameters and runs on every read; a uri with
     # {placeholders} is a template whose body gets the matched values.
     def resource_decl(node, pos, kw, blk, srv)
-      bad(node, "duplicate resource `#{pos[0]}`") if srv["resources"].any? { |x| x["name"] == pos[0] }
+      bad(node, "duplicate resource `#{pos[0]}`#{first_at(node, srv["resources"].find { |x| x["name"] == pos[0] })}") if srv["resources"].any? { |x| x["name"] == pos[0] }
       segments = parse_uri_template(node, kw[:uri]) # first, so a bad character or brace gets its specific message
       bad(node, "`uri:` must look like scheme://path, got #{kw[:uri].inspect}") unless kw[:uri].match?(%r{\A[A-Za-z][A-Za-z0-9+.-]*://\S+\z})
-      bad(node, "duplicate resource uri #{kw[:uri]}") if srv["resources"].any? { |x| x["uri"] == kw[:uri] }
+      bad(node, "duplicate resource uri #{kw[:uri]}#{first_at(node, srv["resources"].find { |x| x["uri"] == kw[:uri] })}") if srv["resources"].any? { |x| x["uri"] == kw[:uri] }
       (@resource_nodes ||= {})[pos[0]] = node
       vars = template_vars(segments)
       prm = template_params(node, pos[0], kw, vars, srv)
@@ -1508,7 +1583,7 @@ module RmcpDsl
       end
       { "name" => pos[0], "uri" => kw[:uri], "description" => kw[:description], "mime_type" => kw[:mime_type], **template,
         "title" => kw[:title], "icon" => kw[:icon], "meta" => kw[:meta], "audience" => kw[:audience], "priority" => kw[:priority],
-        "size" => kw[:size], "body" => body, "complete_body" => complete_body, "line" => node.location.start_line }
+        "size" => kw[:size], "body" => body, "complete_body" => complete_body, **located(node) }
     end
 
     # `size:` is what clients show as the resource's size and use to estimate how much of a model's context it takes
@@ -1568,7 +1643,7 @@ module RmcpDsl
     end
 
     def tool_decl(node, pos, kw, blk, srv)
-      bad(node, "duplicate tool `#{pos[0]}`") if srv["tools"].any? { |t| t["name"] == pos[0] }
+      bad(node, "duplicate tool `#{pos[0]}`#{first_at(node, srv["tools"].find { |t| t["name"] == pos[0] })}") if srv["tools"].any? { |t| t["name"] == pos[0] }
       prm = srv["params"].find { |x| x["name"] == kw[:params] } or
         undeclared(node, "tool `#{pos[0]}` refers to undeclared params `#{kw[:params]}`", kw[:params], srv["params"].map { |x| x["name"] })
       out = nil
@@ -1584,7 +1659,7 @@ module RmcpDsl
       end
       bad(node, "tool `#{pos[0]}` needs a `body`") unless body
       decl = { "name" => pos[0], "description" => kw[:description], "params" => prm["name"], "body" => body,
-               "line" => node.location.start_line }
+               **located(node) }
       decl["output"] = out["name"] if out
       decl["icon"] = kw[:icon] if kw[:icon]
       decl["meta"] = kw[:meta] if kw[:meta]
@@ -1647,7 +1722,7 @@ module RmcpDsl
       bad(node, "`input_schema:` property `#{field['name']}` is a hash such as { \"type\" => \"string\" }") unless prop.is_a?(Hash)
       type = prop["type"]
       return if type.nil? # a $ref or anyOf: nothing to compare
-      return if field["type"].match?(CAMEL) || CompositeTypes.object_list?(field["type"]) || field["type"].match?(CompositeTypes::OPAQUE_FIELD) || CompositeTypes.map_field_text?(field["type"]) && Array(type).include?("object")
+      return if field["type"].match?(CAMEL) || CompositeTypes.object_list?(field["type"]) || field["type"].match?(CompositeTypes::OPAQUE_FIELD) || field["type"].match?(CompositeTypes::OPAQUE_LIST_FIELD) || CompositeTypes.map_field_text?(field["type"]) && Array(type).include?("object")
 
       want = SCHEMA_TYPES[field["type"]] || ["object"]
       return if (Array(type) & want).any?

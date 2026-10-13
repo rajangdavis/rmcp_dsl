@@ -126,6 +126,7 @@ module RmcpDsl
       @used_read_uri = false # a resource content took the read uri as its default
       # An optional field is nil-able in the body: use `|| default`, `.nil?` or `.to_s`.
       @types = params["fields"].to_h { |f| [f["name"], field_type(f)] }
+      @enums = params["fields"].to_h { |f| [f["name"], f["enum"]] }.compact # for entry_args into a Literal field
     end
 
     def lower(blk, output = nil)
@@ -278,7 +279,7 @@ module RmcpDsl
         body = each_block_stmts(st, env.merge(param => elem))
         "for __e in #{iterable}.iter() { let #{param} = #{elem == :i64 ? '*__e' : '__e.to_string()'}; #{body.join(' ')} }"
       elsif struct_list?(recv[1])
-        elem = :"struct:#{struct_list_name(recv[1])}"
+        elem = list_elem(recv[1])
         param = block_param(blk, env, "`each`", elem)
         body = each_block_stmts(st, env.merge(param => elem))
         "for __e in #{iterable}.iter() { let #{param} = (*__e).clone(); #{body.join(' ')} }"
@@ -323,19 +324,20 @@ module RmcpDsl
       r
     end
 
-    # Reports go to the collector only for the DSL file itself (a binding file has its own path).
+    # The collector keeps the DSL files' positions and drops a binding file's (TypeNames::Collector#add).
     def note_type(loc, kind, sym, name = nil)
       c = @flags["types"]
-      c.add(loc, kind, TypeNames.display(sym), name: name) if c && c.path == @path
+      c&.add(loc, kind, TypeNames.display(sym), name: name)
     end
 
     # A stand-in for a Prism::Location when only a name's own span is wanted: a keyword parameter's
-    # location includes its trailing colon, which the editor should not underline.
-    NameSpan = Struct.new(:start_line, :start_column, :end_line, :end_column)
+    # location includes its trailing colon, which the editor should not underline. It keeps the parse's
+    # source, which is how the type collector tells which file a position is in (RmcpDsl::SOURCE_FILES).
+    NameSpan = Struct.new(:start_line, :start_column, :end_line, :end_column, :source)
 
     def name_span(node, name)
       loc = node.respond_to?(:name_loc) ? node.name_loc : node.location
-      NameSpan.new(loc.start_line, loc.start_column, loc.start_line, loc.start_column + name.to_s.bytesize)
+      NameSpan.new(loc.start_line, loc.start_column, loc.start_line, loc.start_column + name.to_s.bytesize, loc.send(:source))
     end
 
     def note_decl(loc, name, kind, sym)
@@ -495,10 +497,33 @@ module RmcpDsl
       sym.to_s.start_with?("struct:") || (OPT.key?(sym) && OPT[sym].to_s.start_with?("struct:"))
     end
 
-    # A list of another params struct (:"list<struct:Name>"); its element type is :struct:Name.
-    def struct_list?(sym) = CompositeTypes.object_list_sym?(sym)
+    # A list of another params struct (:"list<struct:Name>", element :struct:Name), or of a type a binding owns
+    # (:"list<ext<Html::Row>>", element :"ext<Html::Row>"): the same list methods serve both.
+    def struct_list?(sym) = CompositeTypes.object_list_sym?(sym) || !CompositeTypes::Opaque.list_element(sym).nil?
 
-    def struct_list_name(sym) = CompositeTypes.object_list_element(sym)
+    def struct_list_name(sym) = CompositeTypes.object_list_element(sym) || CompositeTypes::Opaque.list_element(sym)
+
+    def list_elem(sym)
+      (name = CompositeTypes::Opaque.list_element(sym)) ? CompositeTypes::Opaque.symbol(name) : :"struct:#{struct_list_name(sym)}"
+    end
+
+    # A record: a binding type that lists its fields (docs/specs/typed_record.md), so a body may read them.
+    def record?(sym) = opaque?(sym) && !CompositeTypes::Opaque.fields(opaque_name(sym)).nil?
+
+    # The type of a record's field, refused with the declared fields when there is none.
+    def record_field_type(node, rname, name)
+      fields = CompositeTypes::Opaque.fields(rname)
+      f = fields.find { |x| x[0] == name.to_s } or
+        bad(node, "#{rname} has no field `#{name}` (its fields: #{fields.map(&:first).join(', ')})", word: name.to_s, from: fields.map(&:first))
+      f[1].to_sym
+    end
+
+    # row.text: the field's value, owned (cloned unless Copy) so the record can be read again.
+    def record_field(node, name, recv)
+      t = record_field_type(node, opaque_name(recv[1]), name)
+      copy = %i[i32 i64 f64 bool oi32 oi64 of64 obool].include?(t)
+      ["#{wrap(recv)}.#{name}#{copy ? '' : '.clone()'}", t, true]
+    end
 
     def interp(n, env)
       fmt = +""
@@ -547,6 +572,7 @@ module RmcpDsl
       return output_new(n, args, env) if name == :result && n.receiver.nil?
       return setting_call(n, args) if name == :setting && n.receiver.nil?
       return file_text_call(n, args) if name == :file_text && n.receiver.nil?
+      return file_path_call(n, args) if name == :file_path && n.receiver.nil?
       return entry_call(n, args) if name == :entry && n.receiver.nil?
       return entry_args_call(n, args, env) if name == :entry_args && n.receiver.nil?
       return elicit_call(n, args, env) if name == :elicit && n.receiver.nil?
@@ -580,6 +606,10 @@ module RmcpDsl
       return roots_method(n, name, args, recv, env) if recv[1] == :roots_result
       return elicit_field(n, name, recv) if recv[1] == :elicit_result && args.empty?
       return struct_field(n, name, recv) if recv[1].to_s.start_with?("struct:") && args.empty?
+      if record?(recv[1])
+        bad(n, "#{opaque_name(recv[1])} is read-only here; a binding function creates records") if name.to_s.end_with?("=")
+        return record_field(n, name, recv) if args.empty?
+      end
 
 
       if recv[1] == :regex && !%i[gsub sub].include?(name)
@@ -587,7 +617,7 @@ module RmcpDsl
       end
       if OPT.key?(recv[1])
         inner = OPT[recv[1]]
-        if inner.to_s.start_with?("struct:") && name != :nil?
+        if (inner.to_s.start_with?("struct:") || record?(inner)) && name != :nil?
           bad(n, "`#{n.receiver.slice}` may be nil, so read its fields with `&.` (write `#{n.receiver.slice}&.#{name}`) or test `.nil?` first")
         end
         if MAPS.key?(inner) # m["a"] on a map of maps: index the inner map too; a missing outer key gives nil
@@ -964,19 +994,24 @@ module RmcpDsl
       recv = expr(node.receiver, env)
       inner = OPT[recv[1]] or
         bad(node, "`&.` is only for a value that may be nil, but `#{node.receiver.slice}` is always present")
-      unless inner.to_s.start_with?("struct:")
-        bad(node, "`&.` is only supported on an optional nested object so far, not on #{TypeNames.display(recv[1])}")
+      unless inner.to_s.start_with?("struct:") || record?(inner)
+        bad(node, "`&.` is only supported on an optional nested object or record so far, not on #{TypeNames.display(recv[1])}")
       end
       args = node.arguments ? node.arguments.arguments : []
       bad(node, "`&.` on a nested object takes no arguments") unless args.empty?
       name = node.name
       return ["#{wrap(recv)}.is_none()", :bool, true] if name == :nil?
 
-      sname = inner.to_s.delete_prefix("struct:")
-      st = (@structs + @outputs).find { |p| p["name"] == sname } or bad(node, "unknown params `#{sname}`")
-      f = st["fields"].find { |x| x["name"] == name.to_s } or
-        bad(node, "#{sname} has no field `#{name}` (it has: #{st["fields"].map { |x| x["name"] }.join(", ")})", word: name, from: st["fields"].map { |x| x["name"] })
-      t = field_type(f)
+      t =
+        if record?(inner)
+          record_field_type(node, opaque_name(inner), name)
+        else
+          sname = inner.to_s.delete_prefix("struct:")
+          st = (@structs + @outputs).find { |p| p["name"] == sname } or bad(node, "unknown params `#{sname}`")
+          f = st["fields"].find { |x| x["name"] == name.to_s } or
+            bad(node, "#{sname} has no field `#{name}` (it has: #{st["fields"].map { |x| x["name"] }.join(", ")})", word: name, from: st["fields"].map { |x| x["name"] })
+          field_type(f)
+        end
       copy = %i[i32 i64 f64 bool oi32 oi64 of64 obool].include?(t)
       suffix = copy ? "" : ".clone()"
       if OPT.key?(t)
@@ -1196,7 +1231,7 @@ module RmcpDsl
         shape = want.is_a?(Range) ? ".#{name} or .#{name}(arg)" : (want.zero? ? ".#{name}" : ".#{name}(arg)")
         bad(node, "`#{name}` takes #{want.is_a?(Range) ? "at most one argument" : "#{want} argument(s)"}; write `#{shape}`")
       end
-      elem = :"struct:#{struct_list_name(recv[1])}"
+      elem = list_elem(recv[1])
       opt_elem = OPT_OF.fetch(elem)
       case name
       when :length, :size then ["(#{wrap(recv)}.len() as i64)", :i64, true]
@@ -1234,7 +1269,7 @@ module RmcpDsl
       return list_map(blk, value, t, src) if name == :map
 
       bad(blk, "the `#{name}` block must return true or false, got #{t}") unless t == :bool
-      ty = elem.to_s.delete_prefix("struct:")
+      ty = opaque?(elem) ? CompositeTypes::Opaque.rust(opaque_name(elem)) : elem.to_s.delete_prefix("struct:")
       case name
       when :select, :reject
         test = name == :select ? value : "!#{value}"
@@ -2011,6 +2046,17 @@ module RmcpDsl
       ["file_text_#{f['name']}()?", :string, true]
     end
 
+    # file_path(:name): the path the server reads a `file` from (the `env:` variable when it is set, else where the
+    # compiler found it), for a message or a traceback that should name the file. It does not read the file.
+    def file_path_call(node, args)
+      unless args.size == 1 && args[0].is_a?(Prism::SymbolNode)
+        bad(node, "file_path(:name) takes the `as:` name of a file declared with `file \"path\", as: :name`")
+      end
+      f = declared_file(args[0], "file_path")
+      (@flags["used_files"] ||= {})[f["name"]] = true
+      ["file_path_#{f['name']}().display().to_string()", :string, true]
+    end
+
     # entry(:file, :name): the string "name", refused unless :name is one of that file's `entries:`, so a
     # function the server names is one the compiler found in the file.
     def entry_call(node, args)
@@ -2086,7 +2132,28 @@ module RmcpDsl
            else inner == want
            end
       bad(vnode, "#{call}: `#{key}` is `#{key}: #{field['text']}` in #{of}, got #{TypeNames.display(r[1])}") unless ok
+      entry_literal(vnode, field, call, of) if field["literals"]
       "(#{wrap(r)})"
+    end
+
+    # A `Literal["a", "b"]` field takes a string literal from its list, or a tool parameter whose `enum:` lists
+    # only those values. Any other string could carry a value the callee does not accept, so it is refused.
+    def entry_literal(vnode, field, call, of)
+      allowed = field["literals"]
+      key = field["name"]
+      shown = allowed.map(&:inspect).join(", ")
+      if vnode.is_a?(Prism::StringNode)
+        return if allowed.include?(vnode.unescaped)
+
+        bad(vnode, "#{call}: #{vnode.unescaped.inspect} is not one of `#{key}: #{field['text']}` in #{of}",
+            word: vnode.unescaped, from: allowed)
+      end
+      enum = vnode.is_a?(Prism::LocalVariableReadNode) ? @enums[vnode.name.to_s] : nil
+      bad(vnode, "#{call}: `#{key}` is `#{key}: #{field['text']}` in #{of}; pass one of #{shown}, or a parameter declared with enum:") unless enum
+      extra = enum.compact - allowed
+      return if extra.empty?
+
+      bad(vnode, "#{call}: `#{vnode.name}` allows #{extra.map(&:inspect).join(', ')} (its enum:), which `#{key}: #{field['text']}` in #{of} does not")
     end
 
     # The `file` a call names, refused with the declared names when there is none.

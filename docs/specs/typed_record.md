@@ -1,6 +1,16 @@
 # Spec: typed record within the opaque-type rule (gap #3)
 
-Status: proposal for the owner. No code yet. Source: `rmcp-for-blender/docs/rmcp-dsl-gaps.md` #3.
+Status: compiler half built 2026-10-12, as the owner chose (fields in the binding's `Opaque` class, no nesting,
+the conformance check always on): `bindings.rb` `record_field`, `CompositeTypes::Opaque` fields and
+`list<ext<...>>`, `body.rb` `record_field` and record lists through the struct-list paths, `emit.rb`
+`record_check`, `test_records.rb` with `test/fixtures/records/`. Differs from below: the conformance function also
+requires `Clone` (records are read by cloning), mapped to the `class` line; the example lives in
+`test/fixtures/records/`, not `examples/`. Editor support built the same day: `Analysis#records`, completion of
+fields after a dot (`record_fields`), definition (`record_location`, from the receiver's compiled type), RBI
+readers (`Rbi.collect_records`) and `RmcpDsl::Opaque.field` in `rbi/dsl.rbi`, and hover on `Rows::Row` listing
+its fields (`Hover.record_hover`). Not done: completion inside a block over a list of records on the block's
+own line.
+Source: `rmcp-for-blender/docs/rmcp-dsl-gaps.md` #3.
 
 ## Problem
 

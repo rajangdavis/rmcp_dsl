@@ -57,6 +57,9 @@ end
   ```
 - `file_text(:name)` in a body or helper is the file's text as a `String`, read from disk on each call, so
   an edited file is used without a rebuild.
+- `file_path(:name)` is the path the server reads the file from (`env:`'s value when set), as a `String`, for
+  a message or a traceback that should name the file (added 2026-10-12: `compile(source, path, ...)` in the
+  Blender bridge).
 - `entry(:name, :place)` is the string `"place"`, refused at build time unless `:place` is in that file's
   `entries:`. It is how a call names a function so the name is checked.
 - `entry_args(:name, :place, key: value, ...)` is the JSON text of the arguments, written by the compiler
@@ -71,7 +74,9 @@ At build (`rmcp_dsl check`/`build`) and live in the rmcp_dsl LSP:
 
 - Path rules as `rust_file`: relative to the declaring file, no `..`, no NUL, inside its folder after
   `File.realpath`, UTF-8, at most 1,000,000 bytes. The file must exist.
-- Each `entries:` name must appear as a top-level `def NAME(` in the file (a text scan, as
+- Each `entries:` name must appear exactly once as a top-level `def NAME(`, and its TypedDict once as a
+  `class` (added 2026-10-12: Python keeps the last definition, so a second is refused, and the running
+  server compares the last). The scan is a text scan, as
   `warn_missing_module_fns` does for Rust, but an error instead of a warning). The language is taken from
   the extension; for `.py`, the `def` header must annotate every parameter and the return
   (`def place(args: PlaceArgs) -> Report:`), so the Python server can type-check the entry. A header the
@@ -87,7 +92,8 @@ At build (`rmcp_dsl check`/`build`) and live in the rmcp_dsl LSP:
 - Types match one to one: `str` ↔ `:string`, `int` ↔ `:i32`/`:i64`, `float` ↔ `:f64` (an integer is
   accepted), `bool` ↔ `:bool`, `list[str]`/`list[int]`/`list[float]` ↔ the list types, and `X | None`,
   `Optional[X]` or `NotRequired[X]` ↔ a nil-able value (a nil-able DSL value into a field that cannot be
-  None is refused). Any other annotation (`dict`, `Any`, a nested TypedDict) is refused by name, so nothing
+  None is refused). `Literal["a", "b"]` ↔ a string literal from that list, or a parameter whose `enum:` holds
+  only those values (added 2026-10-12, for the Blender `format` and `mode` fields). Any other annotation (`dict`, `Any`, a nested TypedDict) is refused by name, so nothing
   crosses unchecked; typed records (`typed_record.md`) are where nested shapes would come later.
 - An entry no `entry_args` call checks (a hand-built JSON string handed to it) gets warning
   `W-FILE-ARGS-UNCHECKED` on the call, so the unchecked path is visible.

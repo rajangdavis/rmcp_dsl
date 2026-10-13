@@ -26,6 +26,7 @@ module RmcpDsl
     OBJECT_MAP_FIELD = /\Amap\(([A-Z]\w*)\)\z/ # a map of another params struct: "map(Address)"
     OBJECT_LIST_FIELD = /\Alist\(([A-Z]\w*)\)\z/ # a list of another params struct: "list(Address)"
     OPAQUE_FIELD = /\A[A-Z]\w*::[A-Z]\w*\z/ # a field typed with a type a binding owns: "Json::Value"
+    OPAQUE_LIST_FIELD = /\Alist\(([A-Z]\w*::[A-Z]\w*)\)\z/ # a list of one: "list(Html::Row)"
 
     # :"map<V>" -> the value symbol V. V is one of VALUES, a nested object (:"struct:Name"), or a scalar map
     # (:"map<scalar>"), which is how a map of maps is written. nil for anything else, so a map of maps of maps
@@ -133,18 +134,37 @@ module RmcpDsl
     # the symbol :"ext<Json::Value>" and a nil-able one :"opt<ext<Json::Value>>"; the compiler knows only the name, the
     # Rust type behind it and whether it may cross the wire (be a tool field or part of a result). The registry is
     # filled when a file is read (Reader) and when the IR is turned into Rust (Emit), because Emit holds no state.
+    #
+    # A record is an opaque type that also lists its fields ([name, type symbol text, line], and the binding file
+    # they are declared in): the DSL may read them. A list of an opaque type is :"list<ext<Html::Row>>".
     module Opaque
-      Entry = Struct.new(:name, :rust, :wire, keyword_init: true)
+      Entry = Struct.new(:name, :rust, :wire, :fields, :path, :line, keyword_init: true)
       EXT = /\Aext<([A-Z]\w*::[A-Z]\w*)>\z/
+      EXT_LIST = /\Alist<ext<([A-Z]\w*::[A-Z]\w*)>>\z/
 
       @types = {}
 
       class << self
         def reset(entries = [])
-          @types = entries.to_h { |e| [e["name"], Entry.new(name: e["name"], rust: e["rust"], wire: e["wire"])] }
+          @types = entries.to_h do |e|
+            [e["name"], Entry.new(name: e["name"], rust: e["rust"], wire: e["wire"], fields: e["fields"].to_a, path: e["path"], line: e["line"])]
+          end
         end
 
-        def register(name, rust, wire) = @types[name] = Entry.new(name: name, rust: rust, wire: wire)
+        def register(name, rust, wire, fields = [], path = nil, line = nil)
+          @types[name] = Entry.new(name: name, rust: rust, wire: wire, fields: fields, path: path, line: line)
+        end
+
+        # The fields of a record ([name, type symbol, line]); nil for a plain opaque type or an unknown name.
+        def fields(name)
+          f = @types[name]&.fields
+          f.nil? || f.empty? ? nil : f
+        end
+
+        def list_symbol(name) = :"list<ext<#{name}>>"
+
+        # :"list<ext<Html::Row>>" -> "Html::Row"; nil for any other symbol
+        def list_element(sym) = sym.to_s.match(EXT_LIST)&.[](1)
 
         def symbol(name) = :"ext<#{name}>"
 
@@ -183,7 +203,8 @@ module RmcpDsl
         return nil unless s.start_with?("opt<") && s.end_with?(">")
 
         inner = s[4..-2].to_sym
-        return nil unless CompositeTypes.map_sym?(inner) || CompositeTypes.object_list_sym?(inner) || Opaque.symbol?(inner) || inner.to_s.start_with?("struct:")
+        return nil unless CompositeTypes.map_sym?(inner) || CompositeTypes.object_list_sym?(inner) || Opaque.symbol?(inner) ||
+                          Opaque.list_element(inner) || inner.to_s.start_with?("struct:")
 
         inner
       end
@@ -201,7 +222,10 @@ module RmcpDsl
 
       private
 
-      def nested?(sym) = CompositeTypes.map_sym?(sym) || CompositeTypes.object_list_sym?(sym) || Opaque.symbol?(sym) || sym.to_s.start_with?("struct:")
+      def nested?(sym)
+        CompositeTypes.map_sym?(sym) || CompositeTypes.object_list_sym?(sym) || Opaque.symbol?(sym) || !Opaque.list_element(sym).nil? ||
+          sym.to_s.start_with?("struct:")
+      end
     end
 
     # The map types: key?(sym) says whether a symbol is a map, fetch(sym) gives the value symbol.

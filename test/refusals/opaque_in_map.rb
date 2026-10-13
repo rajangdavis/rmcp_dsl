@@ -1,4 +1,4 @@
-# expect: is not supported yet: collections hold basic types
+# expect: is not supported yet: a map holds basic types
 server "refuse", version: "0.1.0" do
   use_bindings :json
   params :P do

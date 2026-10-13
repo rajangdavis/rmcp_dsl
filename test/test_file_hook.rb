@@ -6,7 +6,9 @@
 #   ruby -Ilib test/test_file_hook.rb              # the reader's checks and the emitted Rust
 #   RMCP_CARGO=1 ruby -Ilib test/test_file_hook.rb # also cargo-checks the crate (make test-ruby-rust)
 require "minitest/autorun"
+require "json"
 require "open3"
+require "timeout"
 require "rbconfig"
 require "tmpdir"
 require "fileutils"
@@ -157,6 +159,52 @@ class TestFileHook < Minitest::Test
     assert_match(/W-FILE-ARGS-UNCHECKED.*entry_args\(:scripts, :shout/, check_output(named_only))
   end
 
+  LIT_PY = <<~'PY'
+    from typing import Literal, TypedDict
+
+
+    class ExportArgs(TypedDict):
+        format: Literal["glb", "fbx"]
+
+
+    def export(args: ExportArgs) -> dict:
+        return {}
+  PY
+
+  LIT_DSL = <<~'RB'
+    server "s", version: "0.1.0" do
+      file "py/scripts.py", as: :scripts, entries: %i[export]
+
+      params :P do
+        field :format, :string, enum: ["glb", "fbx"], default: "glb"
+        field :other, :string
+      end
+
+      tool :t, params: :P, description: "d" do
+        body do |format, other|
+          a = entry_args(:scripts, :export, format: format)
+          b = entry_args(:scripts, :export, format: "fbx")
+          "#{other} #{a} #{b} #{file_path(:scripts)}"
+        end
+      end
+
+      transport :stdio
+    end
+  RB
+
+  def test_a_literal_field_takes_a_listed_string_or_an_enum_parameter_within_it
+    with_server(LIT_DSL, LIT_PY) do |file|
+      main = RmcpDsl::Emit.files(RmcpDsl.read(file), file)["src/main.rs"]
+      assert_includes main, "file_path_scripts().display().to_string()"
+    end
+    msg = refused(LIT_DSL.sub('format: "fbx")', 'format: "obj")'), LIT_PY)
+    assert_match(/"obj" is not one of `format: Literal\["glb", "fbx"\]` in ExportArgs/, msg)
+    msg = refused(LIT_DSL.sub('enum: ["glb", "fbx"]', 'enum: ["glb", "fbx", "obj"]'), LIT_PY)
+    assert_match(/`format` allows "obj" \(its enum:\), which `format: Literal\["glb", "fbx"\]` in ExportArgs does not/, msg)
+    msg = refused(LIT_DSL.sub("format: format)", "format: other)"), LIT_PY)
+    assert_match(/pass one of "glb", "fbx", or a parameter declared with enum:/, msg)
+  end
+
   def test_the_emitted_crate_compiles
     skip "set RMCP_CARGO=1 to cargo-check the emitted crate (make test-ruby-rust)" unless ENV["RMCP_CARGO"]
     with_server do |file|
@@ -180,6 +228,46 @@ class TestFileHook < Minitest::Test
       _o, err, status = Open3.capture3({ "S_SCRIPTS" => retyped }, "cargo", "run", "-q", chdir: out, stdin_data: "")
       assert_equal 2, status.exitstatus, err
       assert_match(/field `x` of PlaceArgs changed \(was `x: float \| None`, now `x: str`\)/, err)
+
+      # A later def of the same name is the one Python calls, so it is the one compared.
+      shadowed = File.join(dir, "shadowed.py")
+      File.write(shadowed, "#{PY}\n\ndef place(args: PlaceArgs, extra: int) -> dict:\n    return {}\n")
+      _o, err, status = Open3.capture3({ "S_SCRIPTS" => shadowed }, "cargo", "run", "-q", chdir: out, stdin_data: "")
+      assert_equal 2, status.exitstatus, err
+      assert_match(/`def place` in .* changed since the server was built/, err)
+
+      # While it runs, each read re-checks: an entry removed after startup fails the next call by name.
+      live = File.join(dir, "live.py")
+      File.write(live, PY)
+      stdin, stdout, _stderr, wait = Open3.popen3({ "S_SCRIPTS" => live }, "cargo", "run", "-q", chdir: out)
+      begin
+        io = [stdin, stdout]
+        rpc(io, 1, "initialize", { "protocolVersion" => "2025-06-18", "capabilities" => {}, "clientInfo" => { "name" => "t", "version" => "0" } })
+        stdin.puts(JSON.generate({ "jsonrpc" => "2.0", "method" => "notifications/initialized" }))
+        stdin.flush
+        ok = rpc(io, 2, "tools/call", { "name" => "t", "arguments" => { "name" => "a" } })
+        refute ok.dig("result", "isError"), ok.to_json
+        File.write(live, PY.sub(/^def shout.*\z/m, ""))
+        gone = rpc(io, 3, "tools/call", { "name" => "t", "arguments" => { "name" => "a" } })
+        assert_match(/has no top-level `def shout\(` any more/, gone.to_json)
+      ensure
+        stdin.close
+        wait.value
+      end
+    end
+  end
+
+  # One JSON-RPC request to a server on stdio; notifications on the way are skipped.
+  def rpc(io, id, method, params)
+    stdin, stdout = io
+    stdin.puts(JSON.generate({ "jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params }))
+    stdin.flush
+    Timeout.timeout(180) do
+      loop do
+        line = stdout.gets or raise "the server closed its output"
+        reply = JSON.parse(line)
+        return reply if reply["id"] == id
+      end
     end
   end
 

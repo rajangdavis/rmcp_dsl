@@ -19,6 +19,9 @@ module RmcpDsl
       def at(analysis, line0, utf16_col)
         line = line0 + 1
         col = Position.from_lsp(analysis.line_text(line), utf16_col)
+        record = record_hover(analysis, line, col)
+        return record if record
+
         declared = declaration_hover(analysis, line, col)
         return declared if declared
 
@@ -70,6 +73,24 @@ module RmcpDsl
         value = entry[:keywords][word]
         value = "[#{value.join(", ")}]" if value.is_a?(Array)
         hover_for(analysis, "```ruby\n#{word}: #{value}\n```\n#{doc}", line, first, last)
+      end
+
+      # On a binding record's name (Rows::Row, in a field type or a sig the compile loaded): its Rust type, its fields
+      # with their types and where it is declared. col is a 1-based byte column.
+      def record_hover(analysis, line, col)
+        analysis.line_text(line).to_enum(:scan, /[A-Z]\w*::[A-Z]\w*/).each do
+          m = Regexp.last_match
+          first = m.pre_match.bytesize + 1
+          last = first + m[0].bytesize
+          next unless col >= first && col < last
+
+          rec = analysis.records[m[0]] or return nil
+          fields = rec.fields.map { |name, type, _| "#{name}: #{TypeNames.display(type)}" }.join("\n")
+          where = rec.path ? "\n\ndeclared in #{File.basename(rec.path)}:#{rec.line}" : ""
+          markdown = "**record** `#{rec.name}` (Rust `#{rec.rust}`#{rec.wire ? ', wire' : ''})\n```ruby\n#{fields}\n```#{where}"
+          return hover_for(analysis, markdown, line, first, last)
+        end
+        nil
       end
 
       # [first, last) columns when the position is on the call name or the name token of the declaration, else nil.

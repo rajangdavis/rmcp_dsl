@@ -295,7 +295,7 @@ module RmcpDsl
       o << ""
       clone = clone_structs(ir)
       ir["params"].each do |p|
-        mapped(o, ranges, p["line"], "params `#{p['name']}`") do
+        mapped(o, ranges, p, "params `#{p['name']}`") do
           o << (clone.key?(p["name"]) ? "#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]" : "#[derive(Debug, Serialize, Deserialize, JsonSchema)]")
           o << "struct #{p['name']} {"
           p["fields"].each do |f|
@@ -310,7 +310,7 @@ module RmcpDsl
         o << ""
       end
       ir["outputs"].to_a.each do |p|
-        mapped(o, ranges, p["line"], "output `#{p['name']}`") do
+        mapped(o, ranges, p, "output `#{p['name']}`") do
           o << (clone.key?(p["name"]) ? "#[derive(Clone, Serialize, JsonSchema)]" : "#[derive(Serialize, JsonSchema)]")
           o << "struct #{p['name']} {"
           p["fields"].each do |f|
@@ -340,7 +340,7 @@ module RmcpDsl
         o.concat(RUN_SUBPROCESS.lines.map(&:chomp))
         o << ""
         ir["subprocs"].to_a.each do |sp|
-          mapped(o, ranges, sp["line"], "subprocess `#{sp['name']}`") { o.concat(subproc_fn(sp)) }
+          mapped(o, ranges, sp, "subprocess `#{sp['name']}`") { o.concat(subproc_fn(sp)) }
           o << ""
         end
       end
@@ -349,6 +349,7 @@ module RmcpDsl
         o.concat(binding_fn(b))
         o << ""
       end
+      CompositeTypes::Opaque.types.reject { |t| t.fields.to_a.empty? }.each { |t| record_check(o, ranges, t) }
       unless ir["checked"].to_a.empty?
         o << "// overflow-checked integer arithmetic (only what this server uses): written by the compiler"
         o.concat(checked_int_lines(ir["checked"]))
@@ -361,7 +362,7 @@ module RmcpDsl
         o << ""
       end
       ir["user_helpers"].to_a.each do |h|
-        mapped(o, ranges, h["line"], "helper `#{h['name']}`") { o.concat(helper_fn(h)) }
+        mapped(o, ranges, h, "helper `#{h['name']}`") { o.concat(helper_fn(h)) }
         o << ""
       end
       # One task manager for the whole process, so a task survives the session that created it (HTTP makes a handler
@@ -382,7 +383,7 @@ module RmcpDsl
       o << "impl #{srv} {"
       ir["tools"].each_with_index do |t, i|
         o << "" if i.positive?
-        mapped(o, ranges, t["line"], "tool `#{t['name']}`") { o.concat(tool_fn(t, ir)) }
+        mapped(o, ranges, t, "tool `#{t['name']}`") { o.concat(tool_fn(t, ir)) }
       end
       o << "}"
       o << ""
@@ -393,7 +394,7 @@ module RmcpDsl
         o << "impl #{srv} {"
         prompts.each_with_index do |pr, i|
           o << "" if i.positive?
-          mapped(o, ranges, pr["line"], "prompt `#{pr['name']}`") { o.concat(prompt_fn(pr, ir)) }
+          mapped(o, ranges, pr, "prompt `#{pr['name']}`") { o.concat(prompt_fn(pr, ir)) }
         end
         o << "}"
         o << ""
@@ -402,7 +403,7 @@ module RmcpDsl
         o << "impl #{srv} {"
         resources.each_with_index do |res, i|
           o << "" if i.positive?
-          mapped(o, ranges, res["line"], "resource `#{res['name']}`") { o.concat(resource_fn(res, ir)) }
+          mapped(o, ranges, res, "resource `#{res['name']}`") { o.concat(resource_fn(res, ir)) }
         end
         o << "}"
         o << ""
@@ -442,11 +443,12 @@ module RmcpDsl
       ["#{o.join("\n")}\n", source_map(o, ranges, src)]
     end
 
-    # Records that o[first..last], as built by the block, came from the DSL declaration at `line`.
-    def mapped(o, ranges, line, what)
+    # Records that o[first..last], as built by the block, came from the DSL declaration `decl` (its "line", and its
+    # "file" when a use_dsl fragment holds it).
+    def mapped(o, ranges, decl, what)
       first = o.size
       yield
-      ranges << [first, o.size - 1, line, what] if line
+      ranges << [first, o.size - 1, decl["line"], what, decl["file"]] if decl["line"]
     end
 
     # Which main.rs lines each DSL declaration produced, so CargoBuild can point rustc errors
@@ -459,9 +461,27 @@ module RmcpDsl
         at += 1 + s.count("\n")
       end
       { "source" => src,
-        "ranges" => ranges.map do |first, last, line, what|
-          { "from" => start[first], "to" => start[last] + o[last].count("\n"), "dsl_line" => line, "what" => what }
+        "ranges" => ranges.map do |first, last, line, what, file|
+          range = { "from" => start[first], "to" => start[last] + o[last].count("\n"), "dsl_line" => line, "what" => what }
+          file ? range.merge("dsl_file" => file) : range
         end }
+    end
+
+    # A record's declared fields, checked by rustc against its Rust type: each line reads one field at its declared
+    # type and is mapped to that `field` line in the binding, so a Rust struct that drifts from the declaration
+    # fails the build there, not at a tool. A record is read by cloning, so it must be Clone (the `class` line).
+    def record_check(o, ranges, t)
+      o << "// a record's fields as its binding declares them (see bindings/), checked here: written by the compiler"
+      o << "#[allow(dead_code)]"
+      o << "fn check_record_#{t.name.gsub('::', '_').downcase}(r: &#{t.rust}) {"
+      mapped(o, ranges, { "line" => t.line, "file" => t.path }, "record #{t.name}") { o << "    let _: #{t.rust} = r.clone();" }
+      t.fields.each do |fname, sym, line|
+        mapped(o, ranges, { "line" => line, "file" => t.path }, "field `#{fname}` of record #{t.name}") do
+          o << "    let _: &#{rust_type(sym)} = &r.#{fname};"
+        end
+      end
+      o << "}"
+      o << ""
     end
 
     # One wrapper per binding function the server calls. The types come from the binding's sig, so
@@ -518,6 +538,13 @@ module RmcpDsl
       end
       if (inner = Body::OPT[type.to_sym]) && CompositeTypes::Opaque.symbol?(inner)
         return "Option<#{CompositeTypes::Opaque.rust(CompositeTypes::Opaque.name_of(inner))}>"
+      end
+      if (elem = CompositeTypes::Opaque.list_element(type))
+        rust = CompositeTypes::Opaque.rust(elem)
+        return param ? "&[#{rust}]" : "Vec<#{rust}>"
+      end
+      if (inner = Body::OPT[type.to_sym]) && (elem = CompositeTypes::Opaque.list_element(inner))
+        return "Option<Vec<#{CompositeTypes::Opaque.rust(elem)}>>"
       end
 
       case type.to_sym
@@ -658,6 +685,7 @@ module RmcpDsl
       when CompositeTypes::OBJECT_LIST_FIELD then "Vec<#{CompositeTypes.object_list_name(type)}>"
       when CAMEL then type
       when CompositeTypes::OPAQUE_FIELD then CompositeTypes::Opaque.rust(type)
+      when CompositeTypes::OPAQUE_LIST_FIELD then "Vec<#{CompositeTypes::Opaque.rust(type[CompositeTypes::OPAQUE_LIST_FIELD, 1])}>"
       else TYPES.fetch(type.to_sym)
       end
     end
@@ -1466,7 +1494,8 @@ module RmcpDsl
 
       fn py_def_header(text: &str, name: &str) -> Option<String> {
           let lines: Vec<&str> = text.lines().collect();
-          for (i, raw) in lines.iter().enumerate() {
+          // From the end: Python keeps the last top-level def of a name.
+          for (i, raw) in lines.iter().enumerate().rev() {
               let n = py_norm(raw);
               let rest = n.strip_prefix("async ").unwrap_or(&n);
               let Some(after) = rest.strip_prefix("def ") else { continue };
@@ -1501,7 +1530,7 @@ module RmcpDsl
 
       fn py_dict_fields(text: &str, dict: &str) -> Option<Vec<(String, String)>> {
           let lines: Vec<&str> = text.lines().collect();
-          let start = lines.iter().position(|raw| {
+          let start = lines.iter().rposition(|raw| {
               let n = py_norm(raw);
               py_top_level(raw)
                   && n.strip_prefix("class ").is_some_and(|r| r.starts_with(dict) && r[dict.len()..].trim_start().starts_with('('))

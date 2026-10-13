@@ -26,9 +26,22 @@ module RmcpDsl
       loc = node.location
       near = word && from ? Suggest.nearest_n(word, from) : []
       msg = "#{msg}; did you mean #{near.map { |n| "`#{n}`" }.join(" or ")}?" unless near.empty?
-      raise CompileError.new("#{@path}:#{loc.start_line}:#{loc.start_column + 1}: #{msg}", suggestions: near)
+      raise CompileError.new("#{RmcpDsl.file_of(node) || @path}:#{loc.start_line}:#{loc.start_column + 1}: #{msg}", suggestions: near)
     end
   end
+
+  # The file each parse came from, for the files `use_dsl` splices in. A Prism node knows its parse's Source
+  # object but no path, so the reader registers each parse here ([shown path, absolute path]) and an error or a
+  # notice on any node, however late it is raised, names that node's own file. Reset for each compile.
+  SOURCE_FILES = {}.compare_by_identity
+
+  def self.register_source(program, shown, real) = SOURCE_FILES[program.location.send(:source)] = [shown, real]
+  def self.file_of(node) = SOURCE_FILES[node.location.send(:source)]&.first
+  def self.real_file_of(node) = SOURCE_FILES[node.location.send(:source)]&.last
+
+  # A path as the registry and the language server compare it: resolved when it exists, absolute when it does
+  # not (an editor buffer not yet saved).
+  def self.canon(path) = File.exist?(path) ? File.realpath(path) : File.expand_path(path)
 
   RUST_ESC = { "\\" => "\\\\", "\"" => "\\\"", "\n" => "\\n", "\r" => "\\r", "\t" => "\\t", "\x00" => "\\0" }.freeze
 

@@ -17,8 +17,10 @@ module RmcpDsl
 
     Fn = Struct.new(:name, :params, :returns, :rust, :body, :node, :no_reference, :async, keyword_init: true)
 
-    # A type the binding owns: Json::Value, the Rust type behind it, and whether it may cross the wire.
-    Opaque = Struct.new(:name, :rust, :wire, :node, keyword_init: true)
+    # A type the binding owns: Json::Value, the Rust type behind it, and whether it may cross the wire. A record also
+    # lists its fields ([name, type symbol, line], from `field :text, String` lines), which the DSL may read and the
+    # generated server checks against the Rust struct; a plain opaque type has none.
+    Opaque = Struct.new(:name, :rust, :wire, :node, :fields, keyword_init: true)
 
     BindingFile = Struct.new(:name, :module_name, :path, :source, :crates, :fns, :examples, :types, keyword_init: true) do
       # heck_snake_case for Heck.snake_case: the Rust function the wrapper becomes.
@@ -93,14 +95,15 @@ module RmcpDsl
       end
 
       # class Value < RmcpDsl::Opaque; type_rust "serde_json::Value", wire: true; end: a type the binding owns. The
-      # DSL can hold a value of it and hand it to the binding's functions; it cannot look inside.
+      # DSL can hold a value of it and hand it to the binding's functions; it cannot look inside. A record adds
+      # `field :text, String` lines after type_rust: the DSL may then read those fields (docs/specs/typed_record.md).
       def opaque(node, file)
         bad(node, "a type in a binding is written `class Name < RmcpDsl::Opaque`") unless node.superclass&.slice == "RmcpDsl::Opaque" && node.constant_path.is_a?(Prism::ConstantReadNode)
         name = node.constant_path.name.to_s
         bad(node, "type `#{name}` is declared twice") if file.types.key?(name)
         calls = node.body&.body || []
-        ok = calls.size == 1 && calls[0].is_a?(Prism::CallNode) && calls[0].name == :type_rust && calls[0].receiver.nil?
-        bad(node, "`class #{name} < RmcpDsl::Opaque` holds one line: type_rust \"the::rust::Type\", wire: true") unless ok
+        ok = !calls.empty? && calls[0].is_a?(Prism::CallNode) && calls[0].name == :type_rust && calls[0].receiver.nil?
+        bad(node, "`class #{name} < RmcpDsl::Opaque` starts with type_rust \"the::rust::Type\", wire: true, then optionally `field :name, Type` lines") unless ok
         call = calls[0]
         args = call.arguments&.arguments || []
         kw = args.last.is_a?(Prism::KeywordHashNode) ? args.pop : nil
@@ -113,7 +116,26 @@ module RmcpDsl
           bad(el, "type_rust takes only wire: true or wire: false") unless key == "wire" && (el.value.is_a?(Prism::TrueNode) || el.value.is_a?(Prism::FalseNode))
           wire = el.value.is_a?(Prism::TrueNode)
         end
-        file.types[name] = Opaque.new(name: name, rust: rust, wire: wire, node: node)
+        # Registered before its fields are read, so a field of this very type is named as a record in a record.
+        file.types[name] = Opaque.new(name: name, rust: rust, wire: wire, node: node, fields: [])
+        calls.drop(1).each { |f| record_field(f, file.types[name]) }
+      end
+
+      # field :text, String inside a record: a name and a type a binding sig accepts, not another binding type.
+      def record_field(node, record)
+        ok = node.is_a?(Prism::CallNode) && node.name == :field && node.receiver.nil?
+        bad(node, "after type_rust, a `class #{record.name} < RmcpDsl::Opaque` holds only `field :name, Type` lines") unless ok
+        args = node.arguments&.arguments || []
+        bad(node, "field takes a name and a type, as in `field :text, String`") unless args.size == 2 && args[0].is_a?(Prism::SymbolNode)
+        fname = args[0].unescaped
+        bad(args[0], "field `#{fname}` must be snake_case and not a Rust keyword") if !fname.match?(SNAKE) || RUST_KW.include?(fname)
+        bad(args[0], "record `#{record.name}` declares field `#{fname}` twice") if record.fields.any? { |f| f[0] == fname }
+        sym = type(args[1])
+        inner = Body::OPT[sym] || sym
+        if CompositeTypes::Opaque.symbol?(inner) || CompositeTypes::Opaque.list_element(inner)
+          bad(args[1], "field `#{fname}`: a record cannot hold another binding type (not yet)")
+        end
+        record.fields << [fname, sym, node.location.start_line]
       end
 
       def call(node, file, state)
@@ -136,6 +158,7 @@ module RmcpDsl
           bad(node, "no_reference takes a reason string") unless args.size == 1
           state[:no_reference] = str(args[0])
         when :example then file.examples << example(node, args)
+        when :field then bad(node, "field belongs inside `class Name < RmcpDsl::Opaque`, after its type_rust line")
         else bad(node, "unsupported call `#{node.name}` in a binding")
         end
       end
@@ -196,15 +219,25 @@ module RmcpDsl
         bad(node, "unsupported type `#{node.slice}` (supported: #{type_names}, or T.nilable of those)#{hint}")
       end
 
-      # A scalar or list, or a type this file declared with `class Name < RmcpDsl::Opaque` (written Name or Module::Name).
+      # A scalar or list, or a type this file declared with `class Name < RmcpDsl::Opaque` (written Name or Module::Name),
+      # or T::Array of one of those types.
       def scalar_or_opaque(text)
         return TYPES.fetch(text) if TYPES.key?(text)
 
-        name = text.delete_prefix("#{@file.module_name}::")
-        @file.types.key?(name) ? CompositeTypes::Opaque.symbol("#{@file.module_name}::#{name}") : nil
+        if (m = text.match(/\AT::Array\[(.+)\]\z/))
+          elem = own_type(m[1])
+          return elem && CompositeTypes::Opaque.list_symbol(elem)
+        end
+        (name = own_type(text)) && CompositeTypes::Opaque.symbol(name)
       end
 
-      def type_names = (TYPES.keys + @file.types.keys.map { |n| "#{@file.module_name}::#{n}" }).join(", ")
+      # "Row" or "Html::Row" -> "Html::Row" when this file declares it; nil otherwise.
+      def own_type(text)
+        name = text.delete_prefix("#{@file.module_name}::")
+        @file.types.key?(name) ? "#{@file.module_name}::#{name}" : nil
+      end
+
+      def type_names = (TYPES.keys + @file.types.keys.flat_map { |n| ["#{@file.module_name}::#{n}", "T::Array[#{@file.module_name}::#{n}]"] }).join(", ")
 
       def define(node, file, state)
         bad(node, "binding methods are written `def self.name(...)`") unless node.receiver.is_a?(Prism::SelfNode)

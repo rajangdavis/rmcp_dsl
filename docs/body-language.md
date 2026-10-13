@@ -52,10 +52,12 @@ instead. `rmcp_dsl skill` writes the complete, generated reference; the outline:
   string or nil), `request_id` (a string), `progress_token` (a string or nil, when the client asked for
   progress) and `cancelled?` (a bool).
 - **Files.** `file_text(:name)` is the text of a file declared with `file "path", as: :name`, read from disk on
-  each call (an error result if it cannot be read); it works in a helper too. `entry(:name, :fn)` is the string
+  each call (an error result if it cannot be read); it works in a helper too. `file_path(:name)` is the path it
+  is read from (the `env:` variable when set), for a message or a traceback. `entry(:name, :fn)` is the string
   `"fn"`, refused unless `:fn` is in the file's `entries:`, and `entry_args(:name, :fn, key: value, ...)` is the
   arguments as JSON text, each key and type checked against `def fn` (its one TypedDict parameter or its plain
-  parameters); nil is `null`, and a nil-able value needs a field that allows `None`.
+  parameters); nil is `null`, and a nil-able value needs a field that allows `None`. A `Literal["a", "b"]`
+  field takes a string literal from its list, or a parameter whose `enum:` holds only those values.
 - **Settings.** `setting(:name)` reads a value the server declared with `setting :name, env: "..."`, always as a
   string, so a numeric one is parsed in the body (`setting(:port).to_i`, Ruby's rules, an error result if it does
   not fit). It works only in a tool, prompt or resource body, not in a helper or a binding, where the value must

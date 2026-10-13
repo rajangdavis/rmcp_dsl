@@ -121,7 +121,7 @@ class TestOpaque < Minitest::Test
 
   def test_malformed_type_declarations_are_refused
     assert_includes refused("module Doc\n  class Page < Object\n  end\n  def self.f; end\nend\n"), "a type in a binding is written `class Name < RmcpDsl::Opaque`"
-    assert_includes refused("module Doc\n  class Page < RmcpDsl::Opaque\n  end\nend\n"), "holds one line: type_rust"
+    assert_includes refused("module Doc\n  class Page < RmcpDsl::Opaque\n  end\nend\n"), "starts with type_rust"
     assert_includes refused(format(BINDING, wire: ", wire: 1")), "type_rust takes only wire: true or wire: false"
     assert_includes refused(BINDING.sub('"crate_x::Page"%<wire>s', '"not a path!"')), "is not a path such as serde_json::Value"
   end

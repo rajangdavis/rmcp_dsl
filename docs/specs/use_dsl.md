@@ -1,6 +1,14 @@
 # Spec: `use_dsl` — declarations from another file (gap #32)
 
-Status: proposal for the owner. No code yet. Source: `rmcp-for-blender/docs/rmcp-dsl-gaps.md` #32.
+Status: built 2026-10-12, as answered by the owner (the open questions below: `fragment do`, the same suffix,
+nesting allowed, paths relative to the fragment, every declaration includable). Compiler: `reader.rb` `splice`,
+`RmcpDsl::SOURCE_FILES`, `test_use_dsl.rb`; editor: `lsp/analysis.rb` (`Fragments`, `elsewhere`),
+`lsp/server.rb` `publish_analysis`, `test_lsp_use_dsl.rb`. A cross-file duplicate adds " (first at FILE:LINE)"
+(`reader.rb` `first_at`), and the `use_dsl` string completes the `*.rmcp.rb` files up to two folders below
+(fragments first), both 2026-10-12. Differs from below: a fragment's root is found by scanning `use_dsl` lines
+(directly or through other fragments), not by compiling candidates; helper-name completion across files is not
+done. Source:
+`rmcp-for-blender/docs/rmcp-dsl-gaps.md` #32.
 
 ## Problem
 

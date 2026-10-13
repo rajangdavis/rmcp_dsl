@@ -52,7 +52,8 @@ def method_src(name, sig)
   end
   case sig[:block]
   when :decls
-    sparams << "blk: T.proc.bind(#{scope(name)}).void"
+    # a fragment holds what a server holds, so its block is typed as the server scope
+    sparams << "blk: T.proc.bind(#{scope(name == :fragment ? :server : name)}).void"
     defs << "&blk"
   when :body
     sparams << "blk: T.untyped"
@@ -62,9 +63,11 @@ def method_src(name, sig)
   [sigline, "def #{name}(#{defs.join(', ')}); end"]
 end
 
-# file_text(:name), entry(:file, :fn) and entry_args(:file, :fn, ...) read a `file`; a helper may use them too.
+# file_text(:name), file_path(:name), entry(:file, :fn) and entry_args(:file, :fn, ...) read a `file`; a helper may
+# use them too.
 FILE_CALLS = [
   ["sig { params(name: Symbol).returns(String) }", "def file_text(name); end"],
+  ["sig { params(name: Symbol).returns(String) }", "def file_path(name); end"],
   ["sig { params(file: Symbol, name: Symbol).returns(String) }", "def entry(file, name); end"],
   ["sig { params(file: Symbol, name: Symbol, args: T.untyped).returns(String) }", "def entry_args(file, name, **args); end"]
 ].freeze
@@ -223,10 +226,13 @@ lines.concat([
   "",
   "# The macros a binding file (bindings/*.rb) uses; the compiler reads them with Prism.",
   "module RmcpDsl",
-  "  # A type a binding owns; the compiler reads `type_rust` with Prism.",
+  "  # A type a binding owns; the compiler reads `type_rust` and a record's `field` lines with Prism.",
   "  class Opaque",
   "    sig { params(rust: String, wire: T::Boolean).void }",
   "    def self.type_rust(rust, wire: false); end",
+  "",
+  "    sig { params(name: Symbol, type: T.untyped).void }",
+  "    def self.field(name, type); end",
   "  end",
   "",
   "  module BindingDsl",

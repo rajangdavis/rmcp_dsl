@@ -2,7 +2,7 @@
 
 module RmcpDsl
   # `rmcp_dsl rbi FILE...`: the Sorbet declarations for the names only the DSL knows (the helpers a
-  # file declares). Built from the IR the compiler already produces; the files are read with Prism and
+  # file declares, and the fields of the binding records it loads). Built from the IR the compiler already produces; the files are read with Prism and
   # never run. A helper becomes a method with a real signature on every scope whose body can call it.
   module Rbi
     # The classes in rbi/dsl.rbi whose blocks hold bodies. Helper bodies run in the server block.
@@ -80,7 +80,22 @@ module RmcpDsl
         end
         lines << "end" << ""
       end
+      # A binding record's fields, as readers, so Sorbet types `row.text` in a body as the compiler does.
+      collect_records(files).each do |r|
+        lines << "class #{r['name']}"
+        r["fields"].each_with_index do |(name, type, _line), i|
+          lines << "" if i.positive?
+          lines << "  sig { returns(#{ruby_type(type)}) }"
+          lines << "  def #{name}; end"
+        end
+        lines << "end" << ""
+      end
       lines.join("\n")
+    end
+
+    # The records (binding types with `field` lines) the files load, once each.
+    def self.collect_records(files)
+      files.flat_map { |file| RmcpDsl.read(file)["opaque_types"].to_a.select { |t| t["fields"] } }.uniq { |t| t["name"] }
     end
   end
 end

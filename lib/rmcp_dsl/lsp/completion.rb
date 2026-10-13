@@ -7,7 +7,8 @@ module RmcpDsl
     # before the cursor (a block stack built from do/end lines, then the call being typed on the line), and the
     # compiler's types are only a bonus for the receiver of a `.`.
     module Completion
-      KIND = { method: 2, function: 3, property: 10, field: 5, variable: 6, value: 12, keyword: 14, snippet: 15 }.freeze
+      KIND = { method: 2, function: 3, property: 10, field: 5, variable: 6, value: 12, keyword: 14, snippet: 15, file: 17 }.freeze
+      MAX_DSL_PATHS = 200 # use_dsl path completion lists at most this many files
       SNIPPET = 2
 
       # A method callable in a body: ret is a type, :self, :elem, [:opt, :elem] or :unknown.
@@ -71,7 +72,7 @@ module RmcpDsl
           value = type_of_display(m[1])
           return map_value?(value) ? [:map, value] : :unknown
         end
-        return [:obj, s] if s.match?(/\A[A-Z]\w*\z/) && s != "Regexp"
+        return [:obj, s] if s.match?(/\A[A-Z]\w*(?:::[A-Z]\w*)?\z/) && s != "Regexp" # a params object, or a binding's record
 
         :unknown
       end
@@ -188,6 +189,9 @@ module RmcpDsl
 
         def items
           choices = choice_items and return choices
+          if (m = @prefix.match(/\A\s*use_dsl\s+"([^"]*)\z/))
+            return dsl_path_items(m[1])
+          end
           return [] if in_string_or_comment?
           if (m = @prefix.match(/\bentry(?:_args)?\(\s*:(\w+)\s*,\s*:(\w*)\z/))
             return entry_items(m[1], m[2])
@@ -226,6 +230,20 @@ module RmcpDsl
           { "path" => m[1], "entries" => m[2].split }
         end
 
+        # The paths a use_dsl string may name: the *.rmcp.rb files in this file's folder and up to two folders below
+        # it (not deeper, so a build folder is not walked), as written relative to it, without this file. Fragments
+        # are what it includes, so they sort first.
+        def dsl_path_items(typed)
+          dir = File.dirname(File.expand_path(@a.path))
+          me = File.expand_path(@a.path)
+          rels = Dir.glob(%w[*.rmcp.rb */*.rmcp.rb */*/*.rmcp.rb], base: dir).sort.first(MAX_DSL_PATHS).reject { |rel| File.join(dir, rel) == me }
+          items = rels.map do |rel|
+            fragment = Lsp::Fragments.fragment?(Lsp::Fragments.read(File.join(dir, rel)).to_s)
+            item(rel, :file, fragment ? "fragment" : "DSL file", sort: fragment ? "1" : "2")
+          end
+          filter(items, typed)
+        end
+
         def filter(list, typed)
           return list if typed.to_s.empty?
 
@@ -257,7 +275,8 @@ module RmcpDsl
                 stack.pop
               else
                 head = s[/\A\s*(\w+)\b(?!:)/, 1]
-                kind = HEADS.include?(head) ? head.to_sym : :block
+                # a use_dsl fragment holds what a server holds, so inside it the server's calls are offered
+                kind = head == "fragment" ? :server : (HEADS.include?(head) ? head.to_sym : :block)
                 stack << { kind: kind, line: idx, text: raw, params: params }
               end
             end
@@ -312,7 +331,19 @@ module RmcpDsl
           end
         end
 
-        def fields_of(name) = @decls["params"][name] || @decls["output"][name] || []
+        def fields_of(name) = @decls["params"][name] || @decls["output"][name] || record_fields(name) || []
+
+        # A binding record's fields (`field :text, String` in bindings/*.rb), from the bindings the last compile
+        # loaded, in the shape field_type reads.
+        def record_fields(name)
+          rec = @a.records[name] or return nil
+          rec.fields.map do |fname, sym, _line|
+            inner = Body::OPT[sym.to_sym]
+            base = (inner || sym.to_sym).to_s
+            { name: fname, type: { "strs" => "string_list", "i64s" => "i64_list", "f64s" => "f64_list" }.fetch(base, base),
+              optional: !inner.nil?, doc: "a field of #{name}, declared in #{File.basename(rec.path.to_s)}" }
+          end
+        end
 
         def field_type(f)
           base = case f[:type]

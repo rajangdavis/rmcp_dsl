@@ -26,8 +26,11 @@ module RmcpDsl
   #   class Value < RmcpDsl::Opaque
   #     type_rust "serde_json::Value", wire: true
   #   end
+  #
+  # A record also lists the fields the DSL may read (`field :text, String`), after type_rust.
   class Opaque
     def self.type_rust(_rust, wire: false) = nil
+    def self.field(_name, _type) = nil
   end
 
   module BindingDsl

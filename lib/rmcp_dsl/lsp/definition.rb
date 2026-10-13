@@ -7,7 +7,9 @@ module RmcpDsl
     #     the params or output declaration
     #   - a helper call, name(args) -> the helper's name in `helper :name`
     #   - the entry in entry(:file, :name) or entry_args(:file, :name, ...) -> its `def` line in that file
-    # Anything else, and a name nothing declares, answers nil.
+    #   - the path in use_dsl "dsl/x.rmcp.rb" -> that file
+    # A params, output or helper declared in a use_dsl fragment is found in that file. Anything else, and a name
+    # nothing declares, answers nil.
     module Definition
       module_function
 
@@ -16,7 +18,11 @@ module RmcpDsl
         line = line0 + 1
         text = analysis.line_text(line)
         bytes = text.b
-        word = word_at(bytes, Position.from_lsp(text, utf16_col) - 1)
+        col = Position.from_lsp(text, utf16_col) - 1
+        included = use_dsl_location(analysis, bytes, col)
+        return included if included
+
+        word = word_at(bytes, col)
         return nil unless word
 
         first, last = word
@@ -25,23 +31,63 @@ module RmcpDsl
         entry = entry_location(analysis, bytes[0...first].force_encoding(Encoding::UTF_8), name)
         return entry if entry
 
-        span =
+        record = record_location(analysis, line, bytes, first, last, name, before)
+        return record if record
+
+        found =
           if before == ":" && !(first > 1 && bytes[first - 2] == ":") && name.match?(/\A[A-Z]/)
             type_span(analysis, name)
           elsif !before.match?(/[:.@$]/) && bytes[last] != ":" && name.match?(/\A[a-z_]/)
             helper_span(analysis, name)
           end
-        span && { "uri" => uri, "range" => range(analysis, *span) }
+        return nil unless found
+
+        file, *span = found
+        own = file.nil? || file == RmcpDsl.canon(analysis.path)
+        { "uri" => own ? uri : file_uri(file), "range" => range(analysis, *span, file) }
+      end
+
+      # A binding record (docs/specs/typed_record.md): a field read after a dot (row.text, rows.first&.href) whose
+      # receiver the compiler typed as a record -> that `field` line in the binding; the record's name (Rows::Row)
+      # -> its `class` line.
+      def record_location(analysis, line, bytes, first, last, name, before)
+        if before == "." && name.match?(/\A[a-z_]/)
+          stop = first - 1 # the dot, 0-based; the receiver ends before it (and before a `&` of `&.`)
+          stop -= 1 if stop.positive? && bytes[stop - 1] == "&"
+          recv = analysis.types_at(line, stop).first or return nil
+          rec = analysis.records[recv[:type].to_s[/[A-Z]\w*::[A-Z]\w*/]] or return nil
+          field = rec.fields.find { |n, _, _| n == name } or return nil
+          at_line = field[2]
+        elsif name.match?(/\A[A-Z]/) && (q = bytes[0...last].force_encoding(Encoding::UTF_8)[/([A-Z]\w*::[A-Z]\w*)\z/, 1])
+          rec = analysis.records[q] or return nil
+          at_line = rec.line
+        else
+          return nil
+        end
+        at = { "line" => at_line - 1, "character" => 0 }
+        { "uri" => file_uri(rec.path), "range" => { "start" => at, "end" => at } }
+      end
+
+      # The file a use_dsl path names, when the position is inside its quotes; nil otherwise.
+      def use_dsl_location(analysis, bytes, col)
+        m = bytes.match(/\A\s*use_dsl\s+"([^"]+)"/n) or return nil
+        return nil unless col.between?(m.begin(1), m.end(1))
+
+        path = File.expand_path(m[1].force_encoding(Encoding::UTF_8), File.dirname(analysis.path))
+        return nil unless File.file?(path)
+
+        at = { "line" => 0, "character" => 0 }
+        { "uri" => file_uri(RmcpDsl.canon(path)), "range" => { "start" => at, "end" => at } }
       end
 
       # [line, start_col, end_col] (1-based byte columns, end exclusive) of the name a declaration entry declares:
       # the token of its name when the compiler recorded one (without the colon or quotes), else `:name` found on
       # its first line, else the word that starts the call.
       def name_span(analysis, entry)
-        text = analysis.line_text(entry[:line]).b
+        text = analysis.line_text(entry[:line], entry[:file]).b
         if entry[:name_line]
           line = entry[:name_line]
-          token = analysis.line_text(line).b
+          token = analysis.line_text(line, entry[:file]).b
           first = entry[:name_col] - 1
           last = entry[:name_end_col] - 1
           first += 1 if token[first] == ":" || token[first] == '"' || token[first] == "'"
@@ -70,24 +116,26 @@ module RmcpDsl
 
       def word_byte?(char) = !char.nil? && char.match?(/[A-Za-z0-9_]/)
 
+      # [file, line, first, last] of the params or output declaring `name`, in any file of the compile.
       def type_span(analysis, name)
-        decl = analysis.types.find { |t| t[:kind] == "declaration" && t[:call] == "params" && t[:name] == name }
-        decl ||= analysis.types.find { |t| t[:kind] == "output" && t[:name] == name && output_declaration?(analysis, t) }
-        decl && name_span(analysis, decl)
+        decl = analysis.all_types.find { |t| t[:kind] == "declaration" && t[:call] == "params" && t[:name] == name }
+        decl ||= analysis.all_types.find { |t| t[:kind] == "output" && t[:name] == name && output_declaration?(analysis, t) }
+        decl && [decl[:file], *name_span(analysis, decl)]
       end
 
       # An "output" entry is either the declaration (`output :Name do`) or a result(:Name, ...) call.
       def output_declaration?(analysis, entry)
-        analysis.line_text(entry[:line]).b.byteslice(entry[:col] - 1, 7).to_s.match?(/\Aoutput\b/)
+        analysis.line_text(entry[:line], entry[:file]).b.byteslice(entry[:col] - 1, 7).to_s.match?(/\Aoutput\b/)
       end
 
+      # [file, line, first, last] of the helper's name in `helper :name`, in any file of the compile.
       def helper_span(analysis, name)
-        decl = analysis.types.find { |t| t[:kind] == "helper" && t[:name] == name }
+        decl = analysis.all_types.find { |t| t[:kind] == "helper" && t[:name] == name }
         return nil unless decl
 
-        text = analysis.line_text(decl[:line]).b
+        text = analysis.line_text(decl[:line], decl[:file]).b
         found = text.match(/helper\s+:(#{Regexp.escape(name)})(?![A-Za-z0-9_])/n, decl[:col] - 1)
-        found ? [decl[:line], found.begin(1) + 1, found.end(1) + 1] : name_span(analysis, decl)
+        [decl[:file], *(found ? [decl[:line], found.begin(1) + 1, found.end(1) + 1] : name_span(analysis, decl))]
       end
 
       # The entry name in entry(:file, :name) or entry_args(:file, :name, ...) -> the `def` line in that file.
@@ -101,8 +149,8 @@ module RmcpDsl
 
       def file_uri(path) = "file://#{path.b.gsub(%r{[^A-Za-z0-9\-._~/]}n) { |c| format('%%%02X', c.ord) }}"
 
-      def range(analysis, line, first, last)
-        text = analysis.line_text(line)
+      def range(analysis, line, first, last, file = nil)
+        text = analysis.line_text(line, file)
         {
           "start" => { "line" => line - 1, "character" => Position.to_lsp(text, first) },
           "end" => { "line" => line - 1, "character" => Position.to_lsp(text, last) }

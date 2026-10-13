@@ -33,6 +33,7 @@ module RmcpDsl
         @inlay_hints = inlay_hints
         @completion = completion
         @documents = {}
+        @foreign = {} # uri => { other uri => true }: the files an analysis of uri published errors to (use_dsl fragments)
         @shutdown = false
         @exit = false
         @input.binmode if @input.respond_to?(:binmode)
@@ -162,6 +163,7 @@ module RmcpDsl
           uri = params.dig("textDocument", "uri")
           @documents.delete(uri)
           publish(uri, [], nil)
+          (@foreign.delete(uri) || {}).each_key { |other| publish(other, [], nil) unless @documents.key?(other) }
         when "workspace/didChangeWatchedFiles"
           # A file changed on disk without passing through an open document: a binding or rust_file the
           # editor saved, or one another tool wrote or created. An open DSL document's analysis may have
@@ -186,12 +188,13 @@ module RmcpDsl
       end
 
       def store(uri, text, version)
-        path = uri_to_path(uri)
         @documents[uri] = Document.new(text, version, nil)
         document = analyse(uri)
         @documents[uri] = document
-        publish(uri, document.analysis.diagnostics.map { |d| lsp_diagnostic(document.analysis, d) }, version)
-        refresh_dependents(uri) unless path.end_with?(".rmcp.rb")
+        publish_analysis(uri, document.analysis, version)
+        # A binding or rust_file feeds the DSL files that read it, and a DSL file may be a use_dsl fragment of
+        # another open one, or its root: every other open DSL document is checked again.
+        refresh_dependents(uri)
       end
 
       # Analyses one open document with every open document standing in for its path (so a binding is
@@ -213,8 +216,26 @@ module RmcpDsl
 
           refreshed = analyse(uri)
           @documents[uri] = refreshed
-          publish(uri, refreshed.analysis.diagnostics.map { |d| lsp_diagnostic(refreshed.analysis, d) }, refreshed.version)
+          publish_analysis(uri, refreshed.analysis, refreshed.version)
         end
+      end
+
+      # This document's diagnostics, and the ones its compile found in other files (a root's fragments) to those
+      # files, unless one is open and so publishes its own. A file that had some last time and has none now is
+      # cleared.
+      def publish_analysis(uri, analysis, version)
+        publish(uri, analysis.diagnostics.map { |d| lsp_diagnostic(analysis.line_text(d.line), d) }, version)
+        now = {}
+        analysis.elsewhere.each do |file, diags|
+          other = Definition.file_uri(file)
+          next if @documents.key?(other)
+
+          now[other] = true
+          lines = analysis.lines_of(file)
+          publish(other, diags.map { |d| lsp_diagnostic(lines[d.line - 1].to_s, d) }, nil)
+        end
+        (@foreign[uri] || {}).each_key { |other| publish(other, [], nil) unless now[other] || @documents.key?(other) }
+        @foreign[uri] = now
       end
 
       def publish(uri, diagnostics, version)
@@ -223,14 +244,14 @@ module RmcpDsl
         send_message(jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: params)
       end
 
-      def lsp_diagnostic(analysis, diag)
-        text = analysis.line_text(diag.line)
+      # text is the diagnostic's line, for the UTF-16 columns.
+      def lsp_diagnostic(text, diag)
         {
           range: {
             start: { line: diag.line - 1, character: Position.to_lsp(text, diag.col) },
             end: { line: diag.line - 1, character: Position.to_lsp(text, diag.end_col) }
           },
-          severity: 1,
+          severity: diag.severity,
           source: "rmcp_dsl",
           message: diag.message,
           data: { suggestions: diag.suggestions }

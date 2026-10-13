@@ -43,7 +43,7 @@ module RmcpDsl
       span = Array(m["spans"]).find { |s| s["is_primary"] }
       hit = span && span["file_name"] == "src/main.rs" && locate(map, span["line_start"])
       if hit
-        io.puts "#{map['source']}:#{hit['dsl_line']}: #{m['level']}: #{m['message']} " \
+        io.puts "#{hit['dsl_file'] || map['source']}:#{hit['dsl_line']}: #{m['level']}: #{m['message']} " \
                 "(in #{hit['what']}; generated src/main.rs:#{span['line_start']})#{move_hint(m)}"
       end
       io.puts m["rendered"] if m["rendered"]

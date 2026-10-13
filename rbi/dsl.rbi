@@ -38,6 +38,9 @@ class ServerScope
   sig { params(name: Symbol).void }
   def use_bindings(name); end
 
+  sig { params(path: String).void }
+  def use_dsl(path); end
+
   sig { params(name: Symbol, env: String, description: T.nilable(String), default: T.nilable(T.any(String, Integer, Float, T::Boolean)), optional: T.nilable(T::Boolean), secret: T.nilable(T::Boolean), type: T.nilable(Symbol)).void }
   def setting(name, env:, description: nil, default: nil, optional: nil, secret: nil, type: nil); end
 
@@ -61,6 +64,9 @@ class ServerScope
 
   sig { params(name: Symbol).returns(String) }
   def file_text(name); end
+
+  sig { params(name: Symbol).returns(String) }
+  def file_path(name); end
 
   sig { params(file: Symbol, name: Symbol).returns(String) }
   def entry(file, name); end
@@ -106,6 +112,9 @@ class ToolScope
 
   sig { params(name: Symbol).returns(String) }
   def file_text(name); end
+
+  sig { params(name: Symbol).returns(String) }
+  def file_path(name); end
 
   sig { params(file: Symbol, name: Symbol).returns(String) }
   def entry(file, name); end
@@ -193,6 +202,9 @@ class PromptScope
   sig { params(name: Symbol).returns(String) }
   def file_text(name); end
 
+  sig { params(name: Symbol).returns(String) }
+  def file_path(name); end
+
   sig { params(file: Symbol, name: Symbol).returns(String) }
   def entry(file, name); end
 
@@ -237,6 +249,9 @@ class ResourceScope
   sig { params(name: Symbol).returns(String) }
   def file_text(name); end
 
+  sig { params(name: Symbol).returns(String) }
+  def file_path(name); end
+
   sig { params(file: Symbol, name: Symbol).returns(String) }
   def entry(file, name); end
 
@@ -252,6 +267,9 @@ end
 
 sig { params(name: String, version: String, instructions: T.nilable(String), title: T.nilable(String), description: T.nilable(String), website_url: T.nilable(String), icon: T.nilable(String), page_size: T.nilable(Integer), blk: T.proc.bind(ServerScope).void).void }
 def server(name, version:, instructions: nil, title: nil, description: nil, website_url: nil, icon: nil, page_size: nil, &blk); end
+
+sig { params(blk: T.proc.bind(ServerScope).void).void }
+def fragment(&blk); end
 
 # What text(...), image(...) and the other content builders return.
 class ContentBlock; end
@@ -308,10 +326,13 @@ end
 
 # The macros a binding file (bindings/*.rb) uses; the compiler reads them with Prism.
 module RmcpDsl
-  # A type a binding owns; the compiler reads `type_rust` with Prism.
+  # A type a binding owns; the compiler reads `type_rust` and a record's `field` lines with Prism.
   class Opaque
     sig { params(rust: String, wire: T::Boolean).void }
     def self.type_rust(rust, wire: false); end
+
+    sig { params(name: Symbol, type: T.untyped).void }
+    def self.field(name, type); end
   end
 
   module BindingDsl

@@ -24,6 +24,8 @@ module RmcpDsl
       rust_item: "Injects Rust source text into the generated crate unchecked; the compiler prints a notice for it.",
       rust_fn: "Declares a Rust function's argument and result types so bodies call it as `rust(:name, ...)`; the name is its name in the `from:` module.",
       use_bindings: "Loads bindings/NAME.rb, found next to the DSL file, so bodies can call its typed functions as Module.method.",
+      use_dsl: "Splices in the declarations of a fragment file, a path relative to this file, as if they were written at this line.",
+      fragment: "The one top-level call of a file use_dsl includes; it holds declarations as a server does, except transport.",
       setting: "A value the server reads from an environment variable when it starts, such as an API address or key; bodies read it with setting(:name).",
       openapi: "Makes one tool per operation of an OpenAPI 3.0 or 3.1 file beside this one, calling the API it describes; checked when compiled.",
       rust_file: "Copies a hand-written .rs file from beside the DSL file into the crate as a module that rust_fn can point at.",

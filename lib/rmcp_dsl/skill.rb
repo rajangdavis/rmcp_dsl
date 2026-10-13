@@ -172,6 +172,9 @@ module RmcpDsl
       compared). `file "python/x.py", as: :x, entries: %i[place]` loads a file read from disk on each call: a body or
       helper reads it with `file_text(:x)`, names a checked Python function with `entry(:x, :place)` and builds its
       arguments with `entry_args(:x, :place, key: value)`, checked against the `def` and its TypedDict.
+      A large server splits into files: `use_dsl "dsl/tools.rmcp.rb"` in `server` splices in a fragment, a file whose
+      one top-level call is `fragment do ... end` holding the same declarations (no `transport`); an error names the
+      fragment's own file and line.
       `input_schema: { ... }` on a tool publishes a hand-written schema, checked against the fields.
       A prompt can be a conversation:
       use `message :assistant do ... end` and `message :user do |topic| ... end` blocks, in order, instead of

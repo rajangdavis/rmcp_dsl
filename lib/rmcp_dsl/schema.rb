@@ -103,6 +103,10 @@ module RmcpDsl
     # `from:` on rust_fn says the function is in that module.
     # Load a trusted binding (bindings/<name>.rb); bodies then call Module.method(...) as plain Ruby.
     use_bindings: { in: :server, names: [:name], pos: [:snake], kw: {}, block: nil },
+    # use_dsl "dsl/x.rmcp.rb" splices in the declarations of a fragment file; a fragment body is read as a server
+    # body (the same calls, except transport), so it has no context of its own.
+    use_dsl: { in: :server, names: [:path], pos: [:str], kw: {}, block: nil },
+    fragment: { in: :top, names: [], pos: [], kw: {}, block: :decls },
     # A value the server reads from its environment when it starts: setting(:name) in a body.
     setting: {
       in: :server, names: [:name], pos: [:snake],

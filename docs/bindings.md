@@ -28,6 +28,26 @@ Types are `String`, `Float`, `I32`, `I64`, `T::Boolean`, `T::Array[String]`, `T:
 pass `nil`, a plain value or a nil-able one. A params list field can take a `default:` list (`default: []`),
 so the body always has a list. A binding's opaque type (`class Value < RmcpDsl::Opaque`) is owned by the module that
 declares it, so a second binding cannot name it — keep the type and the functions that use it in one binding.
+
+A **record** is an opaque type that also lists its fields, after its `type_rust` line:
+
+```ruby
+class Row < RmcpDsl::Opaque
+  type_rust "rows::Row", wire: true
+  field :text, String
+  field :href, T.nilable(String)
+  field :rank, I64
+end
+
+sig { params(count: I64).returns(T::Array[Row]) }
+```
+
+A body may read a field (`row.text`, `rows.first&.href`) but not set one or build a record: records come from the
+binding's functions. A list of them (`T::Array[Row]` in a sig, `list(Rows::Row)` as a field, which needs
+`wire: true`) takes the methods a list of params objects takes (`each`, `map`, `select`, `find`, `first`, ...).
+Field types are the ones above; a record cannot hold another binding type yet. The generated server reads each
+field at its declared type in a check function, so a Rust struct that drifts from the declaration fails the build
+at the `field` line, and the record must be `Clone`.
 `rmcp_dsl skill` explains the format with a worked example.
 
 Each method has a `sig`, a `rust "..."` template (or a Ruby body that is compiled), and examples. With a

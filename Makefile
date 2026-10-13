@@ -29,6 +29,7 @@ test-ruby-rust:
 	RMCP_CARGO=1 ruby -Ilib test/test_rust_str.rb
 	RMCP_CARGO=1 ruby -Ilib test/test_rust_fn_nilable.rb
 	RMCP_CARGO=1 ruby -Ilib test/test_file_hook.rb
+	RMCP_CARGO=1 ruby -Ilib test/test_records.rb
 
 # L3: generate Rust tests from the same catalog, then run them.
 gen-diff:

@@ -9,7 +9,8 @@ module RmcpDsl
     class Unreadable < StandardError; end
 
     # base is :string, :int, :f64, :bool, :strs, :i64s or :f64s; nilable means the annotation allows None.
-    Type = Struct.new(:base, :nilable, :text, keyword_init: true)
+    # literals is the value list of a `Literal["a", "b"]` annotation (base :string), nil for any other type.
+    Type = Struct.new(:base, :nilable, :text, :literals, keyword_init: true)
     Param = Struct.new(:name, :annotation, :default, keyword_init: true)
     Def = Struct.new(:name, :params, :returns, :line, :header, keyword_init: true)
     # source is the field line with its comment dropped and whitespace collapsed, what the server compares at run time.
@@ -17,13 +18,14 @@ module RmcpDsl
 
     SCALARS = { "str" => :string, "int" => :int, "float" => :f64, "bool" => :bool }.freeze
     LISTS = { "str" => :strs, "int" => :i64s, "float" => :f64s }.freeze
-    CHECKABLE = "use str, int, float, bool, list[str], list[int], list[float], or one of those | None"
+    CHECKABLE = "use str, int, float, bool, Literal[\"a\", ...], list[str], list[int], list[float], or one of those | None"
 
     module_function
 
     # The top-level `def NAME(` header, joined onto one line, with the line it starts on; nil when absent.
     def find_def(text, name)
       lines = text.lines
+      only_once(lines, /\A(?:async\s+)?def\s+#{Regexp.escape(name)}\s*\(/, "def #{name}")
       lines.each_with_index do |line, i|
         next unless line.match?(/\A(?:async\s+)?def\s+#{Regexp.escape(name)}\s*\(/)
 
@@ -70,6 +72,7 @@ module RmcpDsl
     # The `name: annotation` fields of `class NAME(TypedDict):`, or nil when the file has no such class.
     def typed_dict(text, name)
       lines = text.lines
+      only_once(lines, /\Aclass\s+#{Regexp.escape(name)}\s*\(/, "class #{name}")
       start = lines.index { |l| l.match?(/\Aclass\s+#{Regexp.escape(name)}\s*\(/) } or return nil
       head = strip_comment(lines[start]).strip
       unless head.match?(/\Aclass\s+#{Regexp.escape(name)}\s*\(\s*TypedDict\s*\)\s*:\z/)
@@ -124,6 +127,13 @@ module RmcpDsl
       raise Unreadable, "#{where}: `#{t}` cannot be checked; #{CHECKABLE}" unless parts.size == 1
 
       one = parts[0]
+      if (m = one.match(/\ALiteral\[(.*)\]\z/))
+        values = split_top(m[1]).map(&:strip)
+        unless values.all? { |v| v.match?(/\A"[^"\\]*"\z/) || v.match?(/\A'[^'\\]*'\z/) }
+          raise Unreadable, "#{where}: `#{t}` cannot be checked; a Literal must list plain strings"
+        end
+        return Type.new(base: :string, nilable: nilable, text: t, literals: values.map { |v| v[1...-1] })
+      end
       base = SCALARS[one]
       if base.nil? && (m = one.match(/\A[Ll]ist\[\s*(\w+)\s*\]\z/))
         base = LISTS[m[1]]
@@ -131,6 +141,15 @@ module RmcpDsl
       raise Unreadable, "#{where}: `#{t}` cannot be checked; #{CHECKABLE}" unless base
 
       Type.new(base: base, nilable: nilable, text: t)
+    end
+
+    # Python keeps the last top-level definition of a name, so a second one would be checked against the wrong
+    # text; it is refused instead (an @overload stack too, which an entry cannot use).
+    def only_once(lines, pattern, what)
+      at = lines.each_index.select { |i| lines[i].match?(pattern) }
+      return if at.size < 2
+
+      raise Unreadable, "`#{what}` is defined #{at.size} times at the top level (lines #{at.map { |i| i + 1 }.join(', ')}); Python keeps the last, so remove or rename the others"
     end
 
     def strip_comment(line)
