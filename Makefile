@@ -12,6 +12,12 @@ export CARGO_TARGET_DIR := $(CURDIR)/target
 RUSTFLAGS ?= -Dwarnings
 export RUSTFLAGS
 
+# The gems this project's checks need (Sorbet, for `typecheck`), installed into the
+# container's own gem home. The harness's project hooks call this target, so a project
+# carries the same target vocabulary as the others.
+deps:
+	bundle install
+
 # L1: Ruby shim tests against the catalog.
 test-ruby:
 	ruby -Ilib -Itest -e 'Dir.glob("test/test_*.rb").sort.reject { |f| %w[test_elicitation.rb test_roots.rb test_sampling.rb].include?(File.basename(f)) }.each { |f| require "./#{f}" }'
